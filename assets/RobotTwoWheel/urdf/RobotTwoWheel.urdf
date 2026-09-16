@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="RobotTwoWheel">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.00041536 0 0.053748"
+        rpy="0 0 0" />
+      <mass
+        value="0.96749" />
+      <inertia
+        ixx="0.0031337"
+        ixy="1.2543E-05"
+        ixz="1.968E-06"
+        iyy="0.0013751"
+        iyz="-3.4582E-06"
+        izz="0.003964" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.89412 0.89412 0.89412 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="link_L">
+    <inertial>
+      <origin
+        xyz="-4.6778E-18 -0.013041 6.9389E-18"
+        rpy="0 0 0" />
+      <mass
+        value="0.089143" />
+      <inertia
+        ixx="2.9296E-05"
+        ixy="4.5049E-21"
+        ixz="-6.1401E-37"
+        iyy="4.844E-05"
+        iyz="-4.4817E-21"
+        izz="2.9296E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/link_L.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.89412 0.89412 0.89412 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/link_L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_L"
+    type="continuous">
+    <origin
+      xyz="-0.00037164 0.1395 -0.034"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_L" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="link_R">
+    <inertial>
+      <origin
+        xyz="-9.7571E-19 0.013041 6.9389E-18"
+        rpy="0 0 0" />
+      <mass
+        value="0.089143" />
+      <inertia
+        ixx="2.9296E-05"
+        ixy="7.7611E-23"
+        ixz="-4.7658E-38"
+        iyy="4.844E-05"
+        iyz="2.3654E-21"
+        izz="2.9296E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/link_R.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.89412 0.89412 0.89412 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://RobotTwoWheel/meshes/link_R.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_R"
+    type="continuous">
+    <origin
+      xyz="-0.00037164 -0.1395 -0.034"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_R" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+</robot>
