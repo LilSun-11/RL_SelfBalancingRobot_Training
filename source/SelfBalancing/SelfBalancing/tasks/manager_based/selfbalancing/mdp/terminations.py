@@ -25,12 +25,9 @@ def distance_command_error_exceeded(
     threshold: float,
     wheel_radius: float = 0.034,
 ) -> torch.Tensor:
-    """Huỷ episode ngay nếu quãng đường thực tế (vị trí bánh xe, đo qua encoder) lệch khỏi quãng
-    đường mục tiêu (lệnh) quá ``threshold`` (m) -- xe đi quá xa điểm đặt.
-
-    Lưu ý: dựa trên encoder (giả định bánh xe lăn không trượt) nên có thể bị "lừa" nếu bánh xe trượt
-    trên sàn -- dùng kèm :func:`base_position_error_exceeded` (dựa trên vị trí thật) làm lưới an toàn.
-    """
+    """End the episode if the encoder-measured distance strays more than ``threshold`` (m) from the
+    target. Encoder-based (assumes no-slip), so pair with :func:`base_position_error_exceeded` as a
+    ground-truth safety net."""
     command = env.command_manager.get_command(command_name)[:, 0]
     traveled = wheel_distance(env, asset_cfg, wheel_radius)[:, 0]
     return torch.abs(command - traveled) > threshold
@@ -41,15 +38,15 @@ def base_position_error_exceeded(
     asset_cfg: SceneEntityCfg,
     threshold: float,
 ) -> torch.Tensor:
-    """Huỷ episode ngay nếu vị trí THẬT (root_pos_w, ground-truth mô phỏng -- không qua encoder) của
-    thân xe theo trục X lệch khỏi điểm reset quá ``threshold`` (m).
+    """End the episode if the body's TRUE position (root_pos_w, ground-truth) strays more than
+    ``threshold`` (m) from the reset point, on EITHER the X or Y axis.
 
-    Lưới an toàn bổ sung cho :func:`distance_command_error_exceeded`: nếu bánh xe trượt trên sàn thay
-    vì lăn, encoder (wheel_distance) có thể báo sai (gần 0) trong khi robot đã trôi thật -- termination
-    này dùng vị trí world thật nên không bị exploit theo cách đó. Vì dùng thông tin privileged
-    (không phải cảm biến thật robot có), chỉ hợp lý dùng cho termination/giám sát, không dùng làm
-    observation cho policy.
+    Checking Y matters here because this robot's two wheels get independent torque (see ActionsCfg),
+    so it can actively yaw/turn and drift sideways while X alone stays within range — unlike a
+    symmetric-action TWIP, which physically can't leave the X axis. Privileged info — valid for
+    termination, never as an observation.
     """
     asset: Articulation = env.scene[asset_cfg.name]
     pos_x = asset.data.root_pos_w[:, 0] - env.scene.env_origins[:, 0]
-    return torch.abs(pos_x) > threshold
+    pos_y = asset.data.root_pos_w[:, 1] - env.scene.env_origins[:, 1]
+    return (torch.abs(pos_x) > threshold) | (torch.abs(pos_y) > threshold)

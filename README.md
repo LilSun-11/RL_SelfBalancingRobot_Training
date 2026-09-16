@@ -1,110 +1,220 @@
-# Template for Isaac Lab Projects
+# Self-Balancing TWIP Robot (Isaac Lab)
 
 ## Overview
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+This project trains a two-wheeled self-balancing robot (a "TWIP" — two-wheeled inverted pendulum)
+with reinforcement learning in Isaac Lab, then deploys the trained policy to real hardware.
 
-**Key Features:**
+The end-to-end workflow is:
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+```text
+recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
+      -> train a balancing / velocity-tracking task with RSL-RL (PPO)
+      -> evaluate the policy and export it to .onnx
+      -> convert the exported policy to a C array/header -> flash it onto an ESP32
+```
 
-**Keywords:** extension, template, isaaclab
+- The robot chassis was modeled in CAD and exported as a URDF with STL meshes
+  (`assets/RobotTwoWheel/`), imported directly into Isaac Sim at simulation start (no prebaked USD),
+  so the simulated robot never drifts out of sync with the CAD source.
+- Training uses Isaac Lab's manager-based RL environment (`source/SelfBalancing/`) with RSL-RL/PPO:
+  the robot balances upright while tracking a randomly commanded forward/backward body velocity.
+- `scripts/rsl_rl/play.py` evaluates a trained checkpoint and automatically exports it to both
+  `policy.pt` (JIT) and `policy.onnx` under `logs/rsl_rl/<experiment>/<run>/exported/`.
+- Converting that `.onnx` file into a C array/header and flashing it onto an ESP32 is the final,
+  sim-to-real step of the pipeline; this repository currently covers everything up to the ONNX
+  export, and the ONNX-to-firmware conversion/flashing tooling is not included here yet.
 
-## Installation
+This structure (and the requirements/troubleshooting sections below) follows the layout of
+[sim2real-line-following-robot](https://github.com/SangHuynhVan272/sim2real-line-following-robot), a
+similar sim-to-real Isaac Lab -> ESP32 project, adapted to this robot and to a Ubuntu-only workflow.
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda or uv installation as it simplifies calling Python scripts from the terminal.
+**Keywords:** self-balancing robot, TWIP, reinforcement learning, Isaac Lab, RSL-RL, PPO, sim-to-real, ESP32
 
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+## 1. What is included
 
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+| Path                                                             | Purpose                                                      |
+| ----------------------------------------------------------------- | ------------------------------------------------------------ |
+| `assets/RobotTwoWheel/`                                          | URDF + STL meshes for the physical robot chassis              |
+| `source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/` | Robot config, MDP terms (actions/commands/events/observations/rewards/terminations), env config |
+| `source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/agents/` | RSL-RL PPO hyperparameters                                     |
+| `scripts/rsl_rl/train.py`, `scripts/rsl_rl/play.py`               | Train / evaluate + export (.pt and .onnx) programs             |
+| `scripts/list_envs.py`, `scripts/zero_agent.py`, `scripts/random_agent.py` | Sanity-check scripts (list registered tasks, zero/random action rollouts) |
+| `logs/rsl_rl/selfbalancing/<timestamp>/`                          | Per-run checkpoints, TensorBoard logs, and `exported/policy.onnx` |
 
-    ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/SelfBalancing
+## 2. Requirements
 
-- Verify that the extension is correctly installed by:
+This guide covers Ubuntu only (22.04 LTS or 24.04 LTS).
 
-    - Listing the available tasks:
+- an NVIDIA RTX GPU with a recent driver (this project was developed and tested with the setup
+  below); NVIDIA publishes the current GPU/VRAM/driver requirements for your Isaac Sim version in the
+  [Isaac Sim requirements docs](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/requirements.html) —
+  run `nvidia-smi` first and repair the NVIDIA driver before installing anything if it fails;
+- a stable internet connection for the first Isaac Sim launch (extension/shader downloads).
 
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
+Tested with:
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/list_envs.py
-        ```
+| Component | Version |
+|---|---:|
+| OS | Ubuntu 24.04 LTS |
+| GPU / driver | NVIDIA RTX 3080 (10 GB VRAM) / 580.173.02 |
+| Python | 3.11 |
+| Isaac Sim | 5.1.0 |
+| Isaac Lab | v2.3.2 |
+| PyTorch | 2.7.0, CUDA 12.8 build |
+| RSL-RL | 3.1.2 |
+| NumPy | 1.26.0 |
+| ONNX | 1.20.1 |
 
-    - Running a task:
+These are the versions this repository was validated against, not a hard requirement — but a
+different `rsl-rl-lib`/Isaac Lab combination can change the RL config API (see Troubleshooting).
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
-        ```
+## 3. Install on Ubuntu 22.04 or 24.04
 
-    - Running a task with dummy agents:
+### 3.1 Create the Python environment
 
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
+```bash
+conda create -n env_isaaclab python=3.11 -y
+conda activate env_isaaclab
+python -m pip install --upgrade pip
+```
 
-        - Zero-action agent
+The prompt must begin with `(env_isaaclab)` for every command below.
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
+### 3.2 Install Isaac Sim and PyTorch
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
+```bash
+python -m pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+python -m pip install --upgrade --force-reinstall torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Start Isaac Sim once, accept the EULA, and let it finish downloading extensions/building shader
+caches (can take more than ten minutes on the first launch), then close it:
+
+```bash
+isaacsim
+```
+
+### 3.3 Install Isaac Lab
+
+```bash
+cd ~
+git clone https://github.com/isaac-sim/IsaacLab.git
+cd IsaacLab
+git checkout v2.3.2
+./isaaclab.sh --install rsl_rl
+```
+
+### 3.4 Install this project
+
+Clone or copy this repository outside of the `IsaacLab` directory, then, using the Python
+interpreter that has Isaac Lab installed:
+
+```bash
+python -m pip install -e source/SelfBalancing
+```
+
+## 4. Verify the installation
+
+List the registered tasks (`Template-SelfBalancing-v0` and `Template-SelfBalancing-Play-v0` should
+appear — note the search pattern `"Template-"` in `scripts/list_envs.py`):
+
+```bash
+python scripts/list_envs.py
+```
+
+Run a zero-action or random-action rollout to confirm the environment itself is configured
+correctly, before spending time on training:
+
+```bash
+python scripts/zero_agent.py --task=Template-SelfBalancing-v0
+python scripts/random_agent.py --task=Template-SelfBalancing-v0
+```
 
 ### Set up IDE (Optional)
 
-To setup the IDE, please follow these instructions:
+- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the
+  `setup_python_env` in the drop down menu. When running this task, you will be prompted to add the
+  absolute path to your Isaac Sim installation.
 
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
-
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
+If everything executes correctly, it should create a file `.python.env` in the `.vscode` directory,
+containing the python paths to all the extensions provided by Isaac Sim and Omniverse — this helps
+with indexing for intelligent code suggestions.
 
 ### Setup as Omniverse Extension (Optional)
 
-We provide an example UI extension that will load upon enabling your extension defined in `source/SelfBalancing/SelfBalancing/ui_extension_example.py`.
-
-To enable your extension, follow these steps:
+An example UI extension loads upon enabling your extension, defined in
+`source/SelfBalancing/SelfBalancing/ui_extension_example.py`.
 
 1. **Add the search path of this project/repository** to the extension manager:
     - Navigate to the extension manager using `Window` -> `Extensions`.
     - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
+    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project.
+    - If not already present, also add the path to Isaac Lab's extension directory (`IsaacLab/source`).
     - Click on the **Hamburger Icon**, then click `Refresh`.
 
 2. **Search and enable your extension**:
     - Find your extension under the `Third Party` category.
     - Toggle it to enable your extension.
 
-## Code formatting
+## 5. Train and export your policy
 
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
+Two task variants are registered: `Template-SelfBalancing-v0` (training, 8196 parallel envs) and
+`Template-SelfBalancing-Play-v0` (playback/evaluation, 36 envs, no observation noise — see
+`SelfBalancingEnvCfg_PLAY` in `selfbalancing_env_cfg.py`). The robot's task is to stay upright while
+tracking a randomly commanded forward/backward body velocity (-0.4 to 0.4 m/s).
 
-```bash
-pip install pre-commit
-```
-
-Then you can run pre-commit with:
+### Train
 
 ```bash
-pre-commit run --all-files
+python scripts/rsl_rl/train.py --task=Template-SelfBalancing-v0 --headless
 ```
 
-## Troubleshooting
+Drop `--headless` to watch training in the viewport (much slower). Useful flags:
+
+- `--num_envs <N>` — override the number of parallel environments.
+- `--max_iterations <N>` — number of PPO iterations to run.
+- `--seed <N>` — environment seed.
+
+Logs and checkpoints are saved under `logs/rsl_rl/<experiment_name>/<timestamp>/` (`experiment_name`
+is set in `agents/rsl_rl_ppo_cfg.py`).
+
+### Resume training
+
+```bash
+python scripts/rsl_rl/train.py --task=Template-SelfBalancing-v0 --headless \
+    --resume --load_run <run_dir_name> --checkpoint <model_XXX.pt> --max_iterations <N>
+```
+
+`--max_iterations` adds `<N>` more iterations on top of the resumed checkpoint, not a total target.
+Omit `--load_run`/`--checkpoint` to auto-pick the most recent run and its latest checkpoint.
+Resuming only works if the observation/action dimensions haven't changed since that checkpoint was
+trained (other config changes, e.g. reward weights, are fine to resume across).
+
+### Evaluate a trained policy and export it
+
+```bash
+python scripts/rsl_rl/play.py --task=Template-SelfBalancing-Play-v0 \
+    --load_run <run_dir_name> --checkpoint <model_XXX.pt>
+```
+
+This both plays the policy in the viewport (add `--real-time` to pace it to real time, or `--video`
+to record instead of watching live) and exports it, writing `policy.pt` (JIT) and `policy.onnx` to
+`logs/rsl_rl/selfbalancing/<run_dir_name>/exported/`. `policy.onnx` is the artifact the next
+(not-yet-included) step converts into a C array/header to flash onto the ESP32.
+
+## 6. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `python` points outside `env_isaaclab`, or `isaacsim`/`isaaclab.sh` not found | Run `conda activate env_isaaclab` and retry |
+| `ModuleNotFoundError: isaaclab` or `isaaclab_rl` | Isaac Lab isn't installed in this environment — rerun `./isaaclab.sh --install rsl_rl` from the `IsaacLab` directory |
+| `torch.cuda.is_available()` is `False` | Repair the NVIDIA driver, then reinstall the cu128 PyTorch command from step 3.2 |
+| `RslRlOnPolicyRunnerCfg`/checkpoint errors mentioning `actor`/`critic`/`policy` fields | A newer `rsl-rl-lib` restructured the RL config; `train.py`/`play.py` already call `handle_deprecated_rsl_rl_cfg`/`handle_deprecated_rsl_rl_checkpoint` when available to bridge this — make sure Isaac Lab is up to date, or pin `rsl-rl-lib` to the tested version (3.1.2) |
+| Task not listed by `scripts/list_envs.py` | Confirm the package was installed with `python -m pip install -e source/SelfBalancing` and that the task id still starts with `Template-` (see `scripts/list_envs.py`'s search pattern) |
+| First Isaac Sim launch appears frozen | Wait — the first launch downloads extensions/builds shader caches, which can take more than ten minutes |
+| Pylance is missing indexing for part of the extensions | Add the path to your extension in `.vscode/settings.json` under `"python.analysis.extraPaths"` (see below) |
+| Pylance crashes / runs out of memory | Too many files are indexed — comment out unused Omniverse packages under `"python.analysis.extraPaths"` in `.vscode/settings.json` (see below) |
 
 ### Pylance Missing Indexing of Extensions
 
@@ -132,4 +242,19 @@ Some examples of packages that can likely be excluded are:
 "<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
 "<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
 ...
+```
+
+## Code formatting
+
+We have a pre-commit template to automatically format your code.
+To install pre-commit:
+
+```bash
+pip install pre-commit
+```
+
+Then you can run pre-commit with:
+
+```bash
+pre-commit run --all-files
 ```

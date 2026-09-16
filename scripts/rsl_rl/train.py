@@ -96,6 +96,16 @@ from isaaclab.utils.io import dump_yaml
 
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 
+try:
+    # only present in newer isaaclab_rl (bridges rsl-rl-lib config changes across versions) -- fall
+    # back to a no-op on older isaaclab_rl installs that predate this helper, so this script keeps
+    # working either way instead of trading an ImportError for one installed-rsl-rl-lib-version's bug.
+    from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
+except ImportError:
+
+    def handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version):
+        return agent_cfg
+
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
@@ -120,6 +130,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+
+    # handle deprecated configurations (bridges differences across installed rsl-rl-lib versions)
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here

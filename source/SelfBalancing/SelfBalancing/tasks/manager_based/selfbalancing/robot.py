@@ -1,4 +1,4 @@
-# twip.py
+# robot.py
 import os
 
 import isaaclab.sim as sim_utils
@@ -11,27 +11,26 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *([os.pardi
 ROBOT_TWO_WHEEL_URDF_PATH = os.path.join(_REPO_ROOT, "assets", "RobotTwoWheel", "urdf", "RobotTwoWheel.urdf")
 
 ##
-# Configuration cho Robot TWIP (RobotTwoWheel -- URDF thật xuất từ SolidWorks, mesh STL, khác với
-# TwoWheel.urdf cũ dùng hình học primitive)
+# TWIP robot configuration (RobotTwoWheel -- a real URDF exported from SolidWorks with STL meshes,
+# unlike the old TwoWheel.urdf which used primitive geometry)
 ##
 
 TwoWheel_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
-        # Spawn thẳng từ URDF nguồn (không dùng USD dựng sẵn) để tránh lệch cấu hình mỗi khi URDF
-        # thay đổi. Giữ nguyên cấu trúc thư mục package ROS gốc (RobotTwoWheel/urdf/*.urdf +
-        # RobotTwoWheel/meshes/*.STL) để Isaac Sim URDF importer tự resolve được các
-        # "package://RobotTwoWheel/meshes/..." trong file URDF (tìm ngược lên thư mục cùng tên
-        # package chứa urdf/ -- không cần sửa lại path trong URDF).
+        # Spawn straight from the source URDF (not a prebaked USD) so it never drifts from URDF
+        # edits. Keeps the original ROS package layout (RobotTwoWheel/urdf/*.urdf +
+        # RobotTwoWheel/meshes/*.STL) so the Isaac Sim URDF importer can resolve
+        # "package://RobotTwoWheel/meshes/..." on its own.
         asset_path=ROBOT_TWO_WHEEL_URDF_PATH,
         fix_base=False,
         root_link_name="base_link",
-        # URDF này chỉ có đúng 3 link (base_link, link_L, link_R) nối bằng 2 joint continuous, không
-        # có joint fixed nào để gộp (khác TwoWheel.urdf cũ có nhiều link phụ nối fixed).
+        # Only 3 links (base_link, link_L, link_R) joined by 2 continuous joints -- no fixed joints
+        # to merge (unlike the old TwoWheel.urdf, which had several).
         merge_fixed_joints=False,
         self_collision=False,
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             drive_type="force",
-            # không bake PD drive vào USD, actuator "wheels" bên dưới sẽ set gains lúc runtime
+            # No PD drive baked into the USD; the "wheels" actuator sets gains at runtime.
             target_type="none",
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None),
         ),
@@ -51,11 +50,9 @@ TwoWheel_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # Đo trực tiếp từ URDF + bounding box mesh STL (không có trong URDF, phải đọc mesh):
-        # joint_L/joint_R origin z = -0.034 so với base_link; bán kính bánh xe (link_L/link_R.STL)
-        # ~0.033 (đo bounding box mesh, cả x lẫn z đều ~±0.033 -> bánh gần như hình trụ tròn đều).
-        # đáy bánh xe = -0.034 - 0.033 = -0.067 so với base_link
-        # → spawn base_link ở z=0.067 + margin (0.002) để bánh vừa chạm đất
+        # joint_L/joint_R origin is z=-0.034 from base_link; wheel radius (link_L/R.STL bounding
+        # box) ~0.033 -> wheel bottom = -0.067 from base_link -> spawn base_link at 0.069 (with a
+        # small margin) so the wheels just touch the ground.
         pos=(0.0, 0.0, 0.069),
         joint_pos={
             "joint_L": 0.0,
@@ -65,9 +62,9 @@ TwoWheel_CFG = ArticulationCfg(
     actuators={
         "wheels": IdealPDActuatorCfg(
             joint_names_expr=["joint_L", "joint_R"],
-            # KẾ THỪA effort_limit=0.49 Nm từ robot cũ (giả định cùng loại động cơ JGB37-520) --
-            # CHƯA XÁC NHẬN cho RobotTwoWheel này, base_link nặng hơn (~0.967 kg so với ~0.184 kg cũ)
-            # nên rất có thể cần torque lớn hơn thật -- cần kiểm tra lại datasheet động cơ thực tế.
+            # Inherited from the old robot (same JGB37-520 motor assumption) -- UNCONFIRMED for this
+            # chassis, which is much heavier (~0.967 kg vs ~0.184 kg base_link), so real torque needs
+            # are likely higher. Check the motor datasheet.
             effort_limit=0.49,
             stiffness=0.0,
             damping=0.002,

@@ -9,20 +9,17 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ImuCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 
 from . import mdp
-from .twip import TwoWheel_CFG
+from .robot import TwoWheel_CFG
 
-WHEEL_JOINT_NAMES = ["joint_L", "joint_R"]  # RobotTwoWheel.urdf -- khác wheel1/2_motor cũ
-MOTOR_TORQUE_MAX = 0.49  # Nm — khớp effort_limit của actuator "wheels" trong twip.py (CHƯA XÁC NHẬN
-# cho RobotTwoWheel, kế thừa từ robot cũ -- base_link nặng hơn ~5x, cần kiểm tra lại động cơ thật)
+WHEEL_JOINT_NAMES = ["joint_L", "joint_R"]  # RobotTwoWheel.urdf -- unlike the old wheel1/2_motor
+MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit in robot.py (inherited
+# from the old robot, UNCONFIRMED for this chassis -- base_link is ~5x heavier, motor may need revisiting)
 
-# Theo dõi vị trí của cả 2 bánh xe (trung bình), dùng để train tiến/lùi theo 1 trục X.
-# joint_pos của khớp bánh xe là góc quay liên tục, không wrap [-π, π] (quay vô hạn vòng, -∞ đến +∞).
-WHEEL_RADIUS = 0.033  # m -- đo từ bounding box mesh link_L.STL/link_R.STL (±0.033 cả x lẫn z)
+WHEEL_RADIUS = 0.033  # m — measured from the link_L/link_R.STL mesh bounding box
 
 ##
 # Scene definition
@@ -31,7 +28,7 @@ WHEEL_RADIUS = 0.033  # m -- đo từ bounding box mesh link_L.STL/link_R.STL (�
 
 @configclass
 class TwoWheelSceneCfg(InteractiveSceneCfg):
-    """Sân chơi + robot TWIP."""
+    """Ground plane + TWIP robot."""
 
     ground = AssetBaseCfg(
         prim_path="/World/ground",
@@ -41,8 +38,7 @@ class TwoWheelSceneCfg(InteractiveSceneCfg):
                 static_friction=1.5,
                 dynamic_friction=1.2,
                 restitution=0.0,
-                # "max": luôn lấy ma sát lớn nhất giữa 2 vật liệu tiếp xúc (bánh xe - sàn),
-                # tránh bị kéo xuống do combine mode mặc định "average" nếu 1 bên có ma sát thấp hơn.
+                # "max": always use the higher friction of the two contacting materials.
                 friction_combine_mode="max",
                 restitution_combine_mode="min",
             ),
@@ -56,23 +52,9 @@ class TwoWheelSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
-    # IMU gắn trên thân xe, mô phỏng sensor vật lý (MPU6050, ICM42688...)
-    # lin_acc_b = R^T * (a_body + gravity_bias) — đúng như accelerometer thực đo
-    # khác với projected_gravity = R^T * g (đo hoàn hảo, không có nhiễu từ gia tốc thân xe)
-    imu: ImuCfg = ImuCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=ImuCfg.OffsetCfg(
-            # pos: ước lượng gắn giữa thân (mesh base_link.STL cao tới z~0.130 so với gốc, xem
-            # bounding box) -- CHƯA có vị trí PCB/mount thật, cần chỉnh lại nếu có thiết kế cụ thể.
-            pos=(0.0, 0.0, 0.08),
-            # KHÔNG cần xoay 90° như robot cũ: RobotTwoWheel.urdf có trục bánh xe = Y_robot (chuẩn
-            # "pitch" thông thường) nên sensor-frame mặc định đã khớp trục pitch của robot, không cần
-            # hoán trục X<->Y như robot TWIP cũ (trục bánh xe = X, phải xoay để dồn về sensor-Y).
-            rot=(1.0, 0.0, 0.0, 0.0),
-        ),
-        gravity_bias=(0.0, 0.0, 9.81),
-        update_period=0.0,
-    )
+    # No IMU sensor: pitch_angle/pitch_rate read robot.data.projected_gravity_b/root_ang_vel_b
+    # directly instead (see mdp.imu_pitch_angle/imu_pitch_rate). mdp.imu_lin_acc/imu_ang_vel are
+    # still available if a noisy raw-accelerometer/gyro model is needed later.
 
 
 ##
@@ -82,12 +64,19 @@ class TwoWheelSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ActionsCfg:
-    """Action: 1 xung PWM động cơ duy nhất trong [-1, 1] -> torque [-0.49, 0.49] Nm, áp CÙNG 1 giá
-    trị cho cả 2 bánh (đảm bảo 2 bánh luôn đồng bộ tuyệt đối -- xem SymmetricWheelEffortAction trong
-    mdp/actions.py). Tham khảo từ balancing-robot-pai: action_dim=1 khớp firmware thật (chỉ gửi 1
-    lệnh chung cho cả 2 bánh), nên export ONNX cũng chỉ có 1 output, robot không thể tự rẽ/lệch hướng."""
+    """Action: 2 independent motor commands in [-1, 1] -> torque [-0.49, 0.49] Nm per wheel.
 
-    wheel_effort = mdp.SymmetricWheelEffortActionCfg(
+    Uses the built-in JointEffortActionCfg (one action per wheel) instead of a symmetric single-
+    action term: with randomize_wheel_motor_friction_symmetric enabled, the two wheels can still
+    accumulate a position mismatch over time even under identical torque (PhysX's Coulomb friction
+    model isn't perfectly smooth), and a symmetric action gives the policy no way to correct for
+    that. With independent actions the policy can learn to bias torque to compensate -- the
+    trade-off is it also gains the ability to yaw on purpose, so wheel_vel_diff_l2/wheel_pos_diff_l2
+    in RewardsCfg exist to keep it motivated to stay in sync. Changing action_dim (1 -> 2) means old
+    checkpoints can't be resumed.
+    """
+
+    wheel_effort = mdp.JointEffortActionCfg(
         asset_name="robot",
         joint_names=WHEEL_JOINT_NAMES,
         scale=MOTOR_TORQUE_MAX,
@@ -96,34 +85,33 @@ class ActionsCfg:
 
 @configclass
 class CommandsCfg:
-    """Command terms cho MDP."""
+    """Command terms for the MDP."""
 
-    # quãng đường tiến/lùi mục tiêu (m), lấy mẫu 1 lần/episode (resampling_time_range = episode_length_s)
-    # tạm thời ranges=(0.0, 0.0): ép policy học giữ nguyên vị trí bánh xe = 0 trước, chưa cho di chuyển
-    # tự do -- khi policy giữ vị trí tốt rồi mới mở dần ranges ra (-0.5, 0.5) để học tiến/lùi thật sự.
-    target_distance = mdp.UniformDistanceCommandCfg(
-        asset_cfg=SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
-        wheel_radius=WHEEL_RADIUS,
-        ranges=(0.0, 0.0),
-        resampling_time_range=(10.0, 10.0),
+    # Target linear velocity (m/s) along body X, sampled once per episode (resampling_time_range =
+    # episode_length_s). The robot must learn to hold a constant forward/backward speed rather than
+    # travel to and hold a fixed position (see UniformVelocityCommand in mdp/commands.py).
+    target_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        ranges=(-0.4, 0.4),
+        resampling_time_range=(20.0, 20.0),
         debug_vis=True,
     )
 
 
 @configclass
 class ObservationsCfg:
-    """Observation: góc/tốc độ nghiêng (IMU) + quãng đường/vận tốc từng bánh (encoder) + vị trí mục
-    tiêu (distance_command)."""
+    """Observation: tilt angle/rate (IMU-equivalent) + per-wheel encoder distance/velocity + target
+    velocity."""
 
     @configclass
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        # nhiễu Gaussian mô phỏng IMU thật (accelerometer/gyro không bao giờ đo chính xác tuyệt đối)
+        # Gaussian noise mimics a real IMU (accelerometer/gyro never read perfectly).
         pitch_angle = ObsTerm(func=mdp.imu_pitch_angle, noise=Gnoise(mean=0.0, std=0.01))
         pitch_rate = ObsTerm(func=mdp.imu_pitch_rate, noise=Gnoise(mean=0.0, std=0.02))
-        # quãng đường đã đi (m) của riêng từng bánh, tính từ góc quay khớp encoder (mốc 0 = lúc reset
-        # episode) -- không gộp trung bình 2 bánh như trước, để policy thấy được cả 2 encoder riêng.
+        # Distance traveled (m) per wheel since episode reset, from the wheel encoder angle -- kept
+        # per-wheel (not averaged) so the policy can see both encoders independently.
         wheel1_distance = ObsTerm(
             func=mdp.wheel_distance,
             params={
@@ -138,8 +126,8 @@ class ObservationsCfg:
                 "wheel_radius": WHEEL_RADIUS,
             },
         )
-        # vận tốc góc (rad/s) của từng bánh -- tách riêng 2 term 1 chiều (giống wheel1/2_distance ở
-        # trên) thay vì 1 term joint_vel 2 chiều, cho đồng nhất cách khai báo.
+        # Per-wheel angular velocity (rad/s) -- split into two 1D terms (like wheel1/2_distance
+        # above) instead of one 2D joint_vel term, for a consistent declaration style.
         wheel1_vel = ObsTerm(
             func=mdp.joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[0]])},
@@ -148,8 +136,8 @@ class ObservationsCfg:
             func=mdp.joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[1]])},
         )
-        # quãng đường tiến/lùi mục tiêu (m) mà policy cần đạt được
-        # distance_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_distance"})
+        # Target linear velocity (m/s) the policy needs to track.
+        velocity_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_velocity"})
 
         def __post_init__(self) -> None:
             self.enable_corruption = True
@@ -162,8 +150,8 @@ class ObservationsCfg:
 class EventCfg:
     """Configuration for events."""
 
-    # ma sát bánh xe - mặt sàn: gán 1 lần lúc khởi tạo (range hẹp = giá trị cố định, không random mỗi episode),
-    # khớp với physics_material của ground (static=1.5, dynamic=1.2) để bánh xe bám sàn, không bị trượt.
+    # Wheel-ground friction: fixed at startup (degenerate range = constant), matching the ground's
+    # physics material (static=1.5, dynamic=1.2) so wheels grip instead of slipping.
     wheel_friction = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
@@ -176,8 +164,8 @@ class EventCfg:
         },
     )
 
-    # randomize vị trí trọng tâm của thân xe (base_link, đã gộp upper_base/battery/bolts/motors qua
-    # merge_fixed_joints) để policy không overfit vào 1 vị trí CoM lý tưởng, robust hơn khi CoM thực tế lệch.
+    # Randomize chassis CoM (base_link already merges upper_base/battery/bolts/motors via
+    # merge_fixed_joints) so the policy doesn't overfit to one ideal CoM.
     randomize_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -187,29 +175,14 @@ class EventCfg:
         },
     )
 
-    # Randomize ma sát NGHỈ (static/Coulomb) và ma sát NHỚT (viscous) của khớp động cơ bánh xe -- khác
-    # với wheel_friction ở trên (ma sát bánh xe - MẶT SÀN, rigid body material) và với damping trong
-    # IdealPDActuatorCfg (twip.py, cố định = 0.002, mô hình hoá viscous damping NGAY TRONG công thức
-    # PD của actuator) -- đây là ma sát CƠ KHÍ của khớp (chổi than/hộp số...), do vật lý engine (PhysX)
-    # áp thêm, độc lập với effort do actuator tính ra.
-    # Dùng hàm riêng (mdp.randomize_wheel_motor_friction_symmetric, KHÔNG phải built-in
-    # mdp.randomize_joint_parameters) để cả 2 bánh nhận CÙNG 1 giá trị friction trong 1 env -- built-in
-    # sample độc lập theo từng khớp, có thể khiến 2 bánh lệch friction nhau, phá vỡ tính đối xứng mà
-    # SymmetricWheelEffortAction (áp cùng 1 torque cho cả 2 bánh) đang đảm bảo.
-    # mode="startup": mỗi env có 1 giá trị cố định suốt vòng đời (đặc tính phần cứng, coi như không
-    # đổi giữa các episode) -- robust hơn với sai lệch ma sát cơ khí thực tế giữa các robot.
-    # LƯU Ý: từ Isaac Sim 5.0 trở lên, giá trị này là ĐƠN VỊ EFFORT (Nm cho khớp revolute), không còn
-    # là hệ số không đơn vị như bản cũ -- range chọn nhỏ so với effort_limit=0.49 Nm, cần tinh chỉnh
-    # thực nghiệm.
-    # TẠM TẮT (2026-09-03): dù đã xác nhận cả process_actions lẫn write_joint_friction_coefficient_to_sim
-    # tính/ghi giá trị GIỐNG HỆT NHAU cho joint_L/joint_R (kiểm chứng bằng runtime test thật), bật term
-    # này vẫn gây robot lệch trái/phải rõ rệt -- tắt đi thì hết hẳn hiện tượng. Nhiều khả năng do bản
-    # chất ma sát Coulomb (static/stick-slip) là mô hình KHÔNG TRƠN/rời rạc (bánh "bám" hay "trượt" phụ
-    # thuộc ngưỡng tức thời) -- dù input đối xứng tuyệt đối, sai số dấu-phẩy-động cực nhỏ giữa 2 body có
-    # thể khiến thời điểm "bứt" ma sát của mỗi bánh lệch nhau, và hệ cân bằng ngược vốn rất nhạy sẽ
-    # khuếch đại chênh lệch đó theo thời gian -- không phải bug trong code, mà là đặc tính bất ổn của mô
-    # hình Coulomb friction ở gần vận tốc 0 trong PhysX. Mở lại nếu muốn domain-randomize ma sát cơ khí
-    # khớp, nhưng cân nhắc range nhỏ hơn hoặc theo dõi kỹ hành vi yaw khi bật.
+    # Mechanical joint friction (motor/gearbox), distinct from wheel_friction (ground contact) and
+    # from the actuator's own fixed damping (IdealPDActuatorCfg, damping=0.002) -- this is applied by
+    # PhysX on top of actuator effort. Uses a custom function (not the built-in
+    # randomize_joint_parameters) so both wheels get the same sampled value per env, instead of
+    # independently-sampled friction that could itself become a source of drift. mode="startup":
+    # fixed per env for its whole lifetime (a hardware trait, not something that varies per episode).
+    # Isaac Sim >=5.0 treats this as an effort unit (Nm), not a unitless coefficient -- keep the range
+    # small relative to effort_limit=0.49 Nm.
     randomize_wheel_friction_motor = EventTerm(
         func=mdp.randomize_wheel_motor_friction_symmetric,
         mode="startup",
@@ -219,9 +192,9 @@ class EventCfg:
         },
     )
 
-    # trục bánh xe thật (joint_L/joint_R, axis="0 1 0") = Y_robot = "pitch" trong quy ước
-    # roll/pitch/yaw chuẩn -- KHÁC robot TWIP cũ (trục bánh xe = X = "roll"), nên random góc nghiêng
-    # ban đầu phải dùng key "pitch" ở đây.
+    # Wheel axis (joint_L/joint_R, axis="0 1 0") = Y_robot = "pitch" in standard roll/pitch/yaw
+    # convention (unlike the old TWIP robot, whose wheel axis = X = "roll"), so the initial tilt must
+    # randomize "pitch" here.
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
@@ -242,26 +215,20 @@ class EventCfg:
         },
     )
 
-    # Đẩy bằng LỰC (thay vì set thẳng vận tốc) -- chỉ theo trục X của env (world, cố định hướng dù xe
-    # đang nghiêng), đặt tại điểm lệch +Z so với base_link (body_offset_z, mô phỏng va chạm vào THÂN
-    # TRÊN robot thay vì ngay khối tâm/trục bánh xe -- xem mdp/events.py). Lực chỉ tồn tại đúng 1
-    # physics step (instantaneous_wrench_composer tự reset mỗi step) nên là 1 cú hích ngắn, không kéo
-    # dài suốt cả interval_range_s.
-    # Trục X (không phải Y như robot TWIP cũ) vì trục bánh xe (joint_L/joint_R) của RobotTwoWheel là
-    # Y_robot -- hướng LĂN (hướng có thể sửa bằng torque bánh) là X, nên đẩy theo X mới tạo mất thăng
-    # bằng CÓ Ý NGHĨA huấn luyện (đẩy theo Y sẽ lật ngang, robot không có cách nào tự chống lại).
-    # body_offset_z=0.10: ước lượng theo bounding box mesh base_link.STL (cao tới z~0.130 so với gốc)
-    # -- CHƯA khớp vị trí "thân trên" thật, chỉ là điểm giữa-cao hợp lý, có thể chỉnh lại.
-    # F=m*Δv/dt với xung ~1.5 m/s trong 1 physics step (dt=1/200s), khối lượng xe ~1.15 kg:
-    # F ~ 1.15*1.5/0.005 ~ 345 N -- range (-250,250) đang nhỏ hơn ước lượng này, có thể tăng nếu muốn
-    # cú hích mạnh hơn.
+    # Force-based push (not a velocity set) along the robot's own body X axis (not world X, since a
+    # yaw-drifted robot's world X no longer points along its actual heading), applied above
+    # base_link's true CoM (body_offset_z) to simulate a hit on the upper body rather than at the
+    # CoM/wheel axis. Uses instantaneous_wrench_composer (auto-clears every physics step), so it's a
+    # brief kick, not a sustained force. Magnitude ~ m*dv/dt for a ~1.5 m/s kick over one physics step
+    # (dt=1/200s, mass ~1.15 kg) -> ~345 N; force_range is set below that, room to increase if a
+    # stronger kick is wanted.
     push_robot = EventTerm(
-        func=mdp.push_by_external_force_x,
+        func=mdp.push_by_external_force_local_x,
         mode="interval",
         interval_range_s=(5.0, 7.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (-250.0, 250.0),
+            "force_range": (-200.0, 200.0),
             "body_offset_z": 0.10,
         },
     )
@@ -269,125 +236,98 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP -- thiết kế đơn giản hoá lại từ đầu.
+    """Reward terms for the MDP.
 
-    Nguyên tắc: mọi term đều dùng thang đo ~O(1) mỗi step (chuẩn hoá sai số/vận tốc nhỏ trước khi
-    bình phương, xem norm_scale), để weight có thể so sánh trực tiếp với nhau và với "upright" --
-    không dùng curriculum (weight cố định ngay từ đầu) để đơn giản, dễ resume, dễ debug.
+    All terms use an ~O(1) per-step scale (see norm_scale) so weights stay comparable to each other
+    and to "upright" -- no curriculum, weights are fixed from the start.
 
-    2 nhóm mục tiêu:
-      - Đứng thẳng: upright/upright_bonus (vị trí góc) + pitch_rate (vận tốc góc, chống dao động).
-      - Đứng yên tại target_distance: true_position_tracking (vị trí THẬT, ground-truth, không
-        dùng encoder) + lin_vel_x (vận tốc, tín hiệu phanh nhanh hơn vì không phải đợi sai số vị
-        trí tích luỹ).
-    Cộng thêm action_rate (chống giật/rung tần số cao).
+    Two goals: stay upright (upright/upright_bonus + pitch_rate, plus yaw_rate to suppress spinning
+    now that the two wheels are driven independently), and track target_velocity (velocity_tracking,
+    ground-truth body velocity). Plus action_rate for smoothness.
     """
 
-    # -- Nền tảng --
+    # -- Baseline --
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    terminating = RewTerm(func=mdp.is_terminated, weight=-50000.0)
+    terminating = RewTerm(func=mdp.is_terminated, weight=-100000.0)
 
-    # -- Đứng thẳng --
+    # -- Stay upright --
     upright = RewTerm(
         func=mdp.base_upright_penalty,
-        weight=-10000.0,
+        weight=-50.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     upright_bonus = RewTerm(
         func=mdp.base_upright_reward,
-        weight=5.0,
+        weight=2.0,
         params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.1},
     )
     pitch_rate = RewTerm(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.5,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
-    # Phạt trực tiếp tốc độ quay bánh xe (rad/s) -- khác với action_rate (chỉ phạt Δaction giữa 2
-    # step, tức độ "giật", không phạt độ lớn): term này phạt thẳng bình phương vận tốc góc, nên 1
-    # action lớn nhưng giữ ỔN ĐỊNH (không đổi) vẫn bị phạt nếu khiến bánh quay nhanh, ép robot quay
-    # bánh chậm/vừa đủ để cân bằng thay vì quay nhanh liên tục.
-    # Đặt tên "wheel_speed" (không phải "wheel_vel") để tránh trùng thuộc tính với "wheel_vel" trong
-    # khối reward vị trí đang comment tắt bên dưới -- nếu bỏ comment khối đó, "wheel_vel" ở dưới sẽ
-    # ghi đè âm thầm lên term cùng tên định nghĩa trước đó trong class.
-    # wheel_speed = RewTerm(
-    #     func=mdp.joint_vel_l2,
-    #     weight=-0.0005,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
-    # )
-    # yaw_rate/yaw_angle đã bỏ (2026-08-24): từ khi ActionsCfg.wheel_effort đổi sang
-    # SymmetricWheelEffortActionCfg (1 action, cùng torque cho cả 2 bánh), robot không còn cơ chế
-    # chủ động rẽ/xoay quanh Z nữa (không thể chỉnh lệch torque 2 bánh), nên 2 reward chống xoay này
-    # không còn cần thiết.
-
-    # -- Đứng yên tại vị trí mục tiêu (target_distance) --
-    # Chỉ phạt theo vị trí THẬT (root_pos_w, ground-truth), KHÔNG dùng encoder (wheel_distance) cho
-    # reward -- encoder vẫn còn trong observation để policy "thấy" được, nhưng không dùng làm cơ sở
-    # tính reward vì có thể bị "lừa" khi bánh xe trượt trên sàn (encoder báo sai số ~0 trong khi vị
-    # trí thật đã lệch xa -- từng thấy 90.3% episode huỷ do out_of_range_true_pos trong khi encoder
-    # báo gần như hoàn hảo).
-    # true_position_tracking = RewTerm(
-    #     func=mdp.true_position_error_l2,
-    #     weight=-100.0,
-    #     params={
-    #         "command_name": "target_distance",
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "norm_scale": 0.20,
-    #     },
-    # )
-    # Thử nghiệm: phạt độ lớn vị trí đo qua ENCODER (wheel_distance, khác với true_position_tracking
-    # dùng ground-truth ở trên) -- xem có đủ để giữ vị trí mà không gây mất ổn định như
-    # true_position_tracking hay không. Vẫn có rủi ro bị "lừa" nếu bánh xe trượt (encoder báo sai số
-    # thấp hơn thực tế), nên chỉ coi đây là thử nghiệm, không thay thế lưới an toàn ground-truth.
-    # encoder_distance_tracking = RewTerm(
-    #     func=mdp.distance_command_error_l2,
-    #     weight=-400.0,
-    #     params={
-    #         "command_name": "target_distance",
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
-    #         "wheel_radius": WHEEL_RADIUS,
-    #         "norm_scale": 0.2,
-    #     },
-    # )
-    # Thưởng dương (exponential, chặn trên = 1.0) khi quãng đường đo qua encoder gần đúng vị trí mục
-    # tiêu (target_distance) -- bổ sung cho encoder_distance_tracking (phạt, không chặn) ở trên, tạo
-    # "hố thưởng" nhọn quanh đúng vị trí 0 giống cặp base_upright_penalty/base_upright_reward.
-    # encoder_distance_tracking_bonus = RewTerm(
-    #     func=mdp.distance_command_tracking_bonus,
-    #     weight=10.0,
-    #     params={
-    #         "command_name": "target_distance",
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
-    #         "std": 0.1,
-    #         "wheel_radius": WHEEL_RADIUS,
-    #     },
-    # )
-    # norm_scale=0.5 (m/s) khác với norm_scale=0.20 (m) của các term vị trí ở trên -- vận tốc bị bình
-    # phương nên norm_scale nhỏ như vị trí sẽ biến 1 cú di chuyển sửa lỗi ngắn (vd để bắt kịp cú ngã)
-    # thành phạt khổng lồ, khiến robot thà đứng yên chịu ngã còn hơn di chuyển để tự cứu.
-    lin_vel_x = RewTerm(
-        func=mdp.lin_vel_x_normalized_l2,
-        weight=-30.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "norm_scale": 0.5},
+    # Named "wheel_speed" (not "wheel_vel") to avoid clashing if a "wheel_vel"-named term is ever
+    # added elsewhere in this class.
+    wheel_speed = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-0.00005,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
     )
-    # Phạt tốc độ quay bánh xe (rad/s) -- bổ sung cho lin_vel_x (đo vận tốc thân xe): tránh quay bánh
-    # vô ích (vd 2 bánh quay ngược nhau/rung tại chỗ mà không tạo chuyển động thân xe thật).
-    # wheel_vel = RewTerm(
-    #     func=mdp.joint_vel_l2,
-    #     weight=-0.0005,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
-    # )
-    # Phạt góc quay (tích luỹ) 2 bánh lệch nhau -- vd bánh này quay nhiều/ít hơn bánh kia theo thời
-    # gian nghĩa là xe đang rẽ/lệch hướng chứ không đi thẳng, dù vận tốc tức thời có thể trông ổn.
+    # With independent per-wheel torque, the robot has an actual mechanism to spin in place, and
+    # nothing else stops it from doing so (observed in practice) -- this penalizes yaw rate directly.
+    yaw_rate = RewTerm(
+        func=mdp.ang_vel_z_l2,
+        weight=-0.10,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+    # -- Track target velocity --
+    # Penalize squared error between the body's TRUE linear velocity (root_lin_vel_b, ground-truth)
+    # and target_velocity. No per-wheel split needed (unlike the old encoder-based distance terms):
+    # root_lin_vel_b is already the true body velocity, so wheel-spin-averaging can't fake it -- two
+    # wheels spinning against each other shows up as yaw (ang_vel_z), already penalized above.
+    velocity_tracking = RewTerm(
+        func=mdp.velocity_command_error_l2,
+        weight=-0.25,
+        params={
+            "command_name": "target_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "norm_scale": 0.20,
+        },
+    )
+    # Bounded exponential bonus (like upright_bonus) for tracking target_velocity closely --
+    # complements velocity_tracking's unbounded penalty with a clear positive signal.
+    velocity_tracking_bonus = RewTerm(
+        func=mdp.velocity_command_tracking_bonus,
+        weight=0.5,
+        params={
+            "command_name": "target_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "std": 0.1,
+        },
+    )
+    # lin_vel_x_normalized_l2 would penalize velocity magnitude directly -- that's the right shape
+    # for a "hold position" task, but directly contradicts a nonzero velocity_tracking target, so it
+    # stays out of this reward set.
+
+    # Penalizes the two wheels' instantaneous angular velocity differing (unlike wheel_speed, which
+    # penalizes magnitude regardless of whether the two wheels match) -- catches wheel-speed mismatch
+    # the moment it starts, complementing wheel_pos_diff_l2 (accumulated, see below) which only
+    # catches it once the position gap is large enough.
+    wheel_vel_diff = RewTerm(
+        func=mdp.wheel_vel_diff_l2,
+        weight=-0.005,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
+    )
     # wheel_pos_diff = RewTerm(
     #     func=mdp.wheel_pos_diff_l2,
-    #     weight=-5.0,
+    #     weight=-0.01,
     #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
     # )
 
-    # -- Mượt hành động: chặn hành vi giật/rung bánh xe tần số cao (quan sát được khi play, gây pitch
-    # dao động dữ dội và tự làm nhiễu IMU) -- weight tăng mạnh so với bản trước (-0.1 -> -1.0).
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.050)
+    # Smooth actions: suppresses high-frequency wheel jitter (observed during play -- causes violent
+    # pitch oscillation and feeds back into IMU noise).
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
 
 @configclass
@@ -396,14 +336,13 @@ class TerminationsCfg:
 
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Ngã quá góc cho phép (~40°, tính từ projected_gravity_b)
+    # (2) Fell past the allowed tilt angle (~40°, from projected_gravity_b)
     fell_over = DoneTerm(
         func=mdp.bad_orientation,
         params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.7},
     )
-    # (3) out_of_range (encoder-based) TẮT -- chỉ dùng out_of_range_true_pos (ground-truth), khớp với
-    # true_position_tracking (ground-truth) ở RewardsCfg, không dùng bản encoder vì có thể bị "lừa"
-    # khi bánh xe trượt (xem giải thích ở true_position_tracking).
+    # (3) out_of_range (encoder-based) stays disabled — only the ground-truth version below is
+    # active, to match a ground-truth reward term rather than one that trusts wheel encoders.
     # out_of_range = DoneTerm(
     #     func=mdp.distance_command_error_exceeded,
     #     params={
@@ -413,8 +352,9 @@ class TerminationsCfg:
     #         "wheel_radius": WHEEL_RADIUS,
     #     },
     # )
-    # (4) lưới an toàn ground-truth: huỷ episode nếu vị trí thật lệch quá xa target_distance, tránh
-    # robot "bỏ chạy" vô hạn khỏi vị trí mục tiêu mà không bị phạt tương xứng.
+    # (4) Ground-truth safety net: with target_velocity, unbounded drift is the intended behavior (a
+    # velocity command has no destination), so this stays disabled unless a position-holding command
+    # comes back.
     # out_of_range_true_pos = DoneTerm(
     #     func=mdp.base_position_error_exceeded,
     #     params={"asset_cfg": SceneEntityCfg("robot"), "threshold": 0.20},
@@ -444,11 +384,11 @@ class SelfBalancingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 2
-        self.episode_length_s = 20.0
+        self.episode_length_s = 200.0
         # viewer settings
         self.viewer.eye = (0.8, 0.8, 0.5)
         # simulation settings
-        # dt * decimation = 0.005 * 2 = 0.01s -> chu kỳ lấy mẫu/điều khiển của hệ là 10ms
+        # dt * decimation = 0.005 * 2 = 0.01s -> 100 Hz control loop
         self.sim.dt = 1 / 200
         self.sim.render_interval = self.decimation
 
@@ -458,10 +398,12 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         # post init of parent
         super().__post_init__()
 
-        # scene nhỏ hơn để play/quan sát
+        # smaller scene for play/observation
         self.scene.num_envs = 36
         self.scene.env_spacing = 2.5
-        # tắt nhiễu observation khi play
+        # disable observation noise during play
         self.observations.policy.enable_corruption = False
-        # giữ nguyên lực đẩy ngẫu nhiên (push_robot) khi play để xem policy phản ứng thế nào với
-        # nhiễu/va chạm.
+        # keep push_robot active during play to see how the policy handles disturbances
+        # Shortened for play: the training config's episode_length_s=200.0 is too long to watch a
+        # respawn happen (time_out still works either way -- it's just a long wait at 200s).
+        self.episode_length_s = 20.0
