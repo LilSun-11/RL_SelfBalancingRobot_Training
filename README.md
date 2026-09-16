@@ -203,6 +203,17 @@ to record instead of watching live) and exports it, writing `policy.pt` (JIT) an
 `logs/rsl_rl/selfbalancing/<run_dir_name>/exported/`. `policy.onnx` is the artifact the next
 (not-yet-included) step converts into a C array/header to flash onto the ESP32.
 
+To compare runs (reward curves, episode length, termination breakdown, etc.) before picking a
+checkpoint to evaluate, point TensorBoard at the project's log directory:
+
+```bash
+tensorboard --logdir logs/rsl_rl/selfbalancing --port 6006
+```
+
+Then open `http://localhost:6006` in a browser. `--logdir` can also point at a single run
+(`logs/rsl_rl/selfbalancing/<run_dir_name>`) to inspect just that run, and `--port` can be omitted to
+use TensorBoard's default port (6006).
+
 ## 6. Troubleshooting
 
 | Symptom | Cause and fix |
