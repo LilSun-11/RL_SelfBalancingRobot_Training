@@ -2,6 +2,7 @@
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -20,6 +21,11 @@ MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit i
 # from the old robot, UNCONFIRMED for this chassis -- base_link is ~5x heavier, motor may need revisiting)
 
 WHEEL_RADIUS = 0.033  # m — measured from the link_L/link_R.STL mesh bounding box
+
+VELOCITY_RANGE_MAX = (-0.6, 0.6)  # m/s — final target_velocity range once the curriculum finishes
+VELOCITY_CURRICULUM_STEPS = 20000  # env.common_step_counter ticks to widen over (~625 iterations at
+# num_steps_per_env=32, see agents/rsl_rl_ppo_cfg.py) -- resets to 0 every training process, including
+# a resumed run, see mdp/curriculums.py:widen_velocity_range
 
 ##
 # Scene definition
@@ -90,9 +96,12 @@ class CommandsCfg:
     # Target linear velocity (m/s) along body X, sampled once per episode (resampling_time_range =
     # episode_length_s). The robot must learn to hold a constant forward/backward speed rather than
     # travel to and hold a fixed position (see UniformVelocityCommand in mdp/commands.py).
+    # ranges starts at (0.0, 0.0) here -- CurriculumsCfg.velocity_range widens it to
+    # VELOCITY_RANGE_MAX over training (see mdp/curriculums.py:widen_velocity_range). PLAY overrides
+    # this back to VELOCITY_RANGE_MAX directly (no curriculum during evaluation).
     target_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        ranges=(-0.4, 0.4),
+        ranges=(0.0, 0.0),
         resampling_time_range=(20.0, 20.0),
         debug_vis=True,
     )
@@ -228,7 +237,7 @@ class EventCfg:
         interval_range_s=(5.0, 7.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (-200.0, 200.0),
+            "force_range": (-100.0, 100.0),
             "body_offset_z": 0.10,
         },
     )
@@ -248,7 +257,7 @@ class RewardsCfg:
 
     # -- Baseline --
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    terminating = RewTerm(func=mdp.is_terminated, weight=-100000.0)
+    terminating = RewTerm(func=mdp.is_terminated, weight=-50000.0)
 
     # -- Stay upright --
     upright = RewTerm(
@@ -258,7 +267,7 @@ class RewardsCfg:
     )
     upright_bonus = RewTerm(
         func=mdp.base_upright_reward,
-        weight=2.0,
+        weight=1.0,
         params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.1},
     )
     pitch_rate = RewTerm(
@@ -288,7 +297,7 @@ class RewardsCfg:
     # wheels spinning against each other shows up as yaw (ang_vel_z), already penalized above.
     velocity_tracking = RewTerm(
         func=mdp.velocity_command_error_l2,
-        weight=-0.25,
+        weight=-2.0,
         params={
             "command_name": "target_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -299,7 +308,7 @@ class RewardsCfg:
     # complements velocity_tracking's unbounded penalty with a clear positive signal.
     velocity_tracking_bonus = RewTerm(
         func=mdp.velocity_command_tracking_bonus,
-        weight=0.5,
+        weight=2.5,
         params={
             "command_name": "target_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -316,7 +325,7 @@ class RewardsCfg:
     # catches it once the position gap is large enough.
     wheel_vel_diff = RewTerm(
         func=mdp.wheel_vel_diff_l2,
-        weight=-0.005,
+        weight=-0.05,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
     )
     # wheel_pos_diff = RewTerm(
@@ -327,7 +336,7 @@ class RewardsCfg:
 
     # Smooth actions: suppresses high-frequency wheel jitter (observed during play -- causes violent
     # pitch oscillation and feeds back into IMU noise).
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
 
 
 @configclass
@@ -361,6 +370,28 @@ class TerminationsCfg:
     # )
 
 
+@configclass
+class CurriculumsCfg:
+    """Curriculum terms for the MDP."""
+
+    # Widen target_velocity's sampling range from (0.0, 0.0) to VELOCITY_RANGE_MAX over the first
+    # VELOCITY_CURRICULUM_STEPS environment steps -- lets the policy learn to balance in place before
+    # it has to learn the lean-forward-to-accelerate coupling needed to track a nonzero body velocity
+    # target, instead of facing the full range from step 0. See mdp/curriculums.py.
+    velocity_range = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "commands.target_velocity.ranges",
+            "modify_fn": mdp.widen_velocity_range,
+            "modify_params": {
+                "start_range": (0.0, 0.0),
+                "end_range": VELOCITY_RANGE_MAX,
+                "num_steps": VELOCITY_CURRICULUM_STEPS,
+            },
+        },
+    )
+
+
 ##
 # Environment configuration
 ##
@@ -378,6 +409,7 @@ class SelfBalancingEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
+    curriculum: CurriculumsCfg = CurriculumsCfg()
 
     # Post initialization
     def __post_init__(self) -> None:
@@ -403,6 +435,10 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         self.scene.env_spacing = 2.5
         # disable observation noise during play
         self.observations.policy.enable_corruption = False
+        # Evaluate at the full trained range directly -- a fresh env's common_step_counter starts at
+        # 0, so without this the velocity_range curriculum would make play start narrow too.
+        self.curriculum.velocity_range = None
+        self.commands.target_velocity.ranges = VELOCITY_RANGE_MAX
         # keep push_robot active during play to see how the policy handles disturbances
         # Shortened for play: the training config's episode_length_s=200.0 is too long to watch a
         # respawn happen (time_out still works either way -- it's just a long wait at 200s).

@@ -29,6 +29,36 @@ This structure (and the requirements/troubleshooting sections below) follows the
 [sim2real-line-following-robot](https://github.com/SangHuynhVan272/sim2real-line-following-robot), a
 similar sim-to-real Isaac Lab -> ESP32 project, adapted to this robot and to a Ubuntu-only workflow.
 
+### Policy input/output
+
+The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`) that maps 7
+observations straight to 2 wheel torques, no PID loop in between:
+
+```text
+[pitch angle, pitch rate, wheel_L distance, wheel_R distance, wheel_L velocity, wheel_R velocity,
+ target velocity] -> MLP 7 -> 32 -> 32 -> 2 -> [wheel_L torque, wheel_R torque]
+```
+
+| # | Observation (input) | Source | Unit |
+|---|---|---|---|
+| 1 | pitch angle | `mdp.imu_pitch_angle` | rad |
+| 2 | pitch rate | `mdp.imu_pitch_rate` | rad/s |
+| 3 | wheel_L distance traveled | `mdp.wheel_distance` (`joint_L`) | m |
+| 4 | wheel_R distance traveled | `mdp.wheel_distance` (`joint_R`) | m |
+| 5 | wheel_L angular velocity | `mdp.joint_vel` (`joint_L`) | rad/s |
+| 6 | wheel_R angular velocity | `mdp.joint_vel` (`joint_R`) | rad/s |
+| 7 | target body velocity | `mdp.generated_commands` (`target_velocity`) | m/s |
+
+| # | Action (output) | Range | Unit |
+|---|---|---|---|
+| 1 | wheel_L torque command | raw `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
+| 2 | wheel_R torque command | raw `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
+
+The exported `policy.onnx`/`policy.pt` (see [Evaluate a trained policy and export
+it](#evaluate-a-trained-policy-and-export-it)) keeps this exact 7-in/2-out contract — the ESP32
+firmware needs to feed it observations in this order and units, and apply the same `[-1, 1] ->
+torque` scaling to its raw output.
+
 **Keywords:** self-balancing robot, TWIP, reinforcement learning, Isaac Lab, RSL-RL, PPO, sim-to-real, ESP32
 
 ## 1. What is included
