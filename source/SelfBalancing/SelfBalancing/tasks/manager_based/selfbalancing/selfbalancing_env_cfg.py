@@ -22,10 +22,12 @@ MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit i
 
 WHEEL_RADIUS = 0.033  # m — measured from the link_L/link_R.STL mesh bounding box
 
-VELOCITY_RANGE_MAX = (-0.6, 0.6)  # m/s — final target_velocity range once the curriculum finishes
-VELOCITY_CURRICULUM_STEPS = 20000  # env.common_step_counter ticks to widen over (~625 iterations at
-# num_steps_per_env=32, see agents/rsl_rl_ppo_cfg.py) -- resets to 0 every training process, including
-# a resumed run, see mdp/curriculums.py:widen_velocity_range
+VELOCITY_RANGE_MAX = (-0.5, 0.5)  # m/s — final target_velocity range once the curriculum finishes
+RESAMPLING_TIME_MIN = (5.0, 5.0)  # s — final target_velocity resampling interval once the curriculum
+# finishes (starts at 20s, see CommandsCfg.target_velocity below)
+COMMAND_CURRICULUM_STEPS = 20000  # env.common_step_counter ticks both curricula below ramp over
+# (~625 iterations at num_steps_per_env=32, see agents/rsl_rl_ppo_cfg.py) -- resets to 0 every
+# training process, including a resumed run, see mdp/curriculums.py:linear_range_curriculum
 
 ##
 # Scene definition
@@ -93,12 +95,13 @@ class ActionsCfg:
 class CommandsCfg:
     """Command terms for the MDP."""
 
-    # Target linear velocity (m/s) along body X, sampled once per episode (resampling_time_range =
-    # episode_length_s). The robot must learn to hold a constant forward/backward speed rather than
-    # travel to and hold a fixed position (see UniformVelocityCommand in mdp/commands.py).
-    # ranges starts at (0.0, 0.0) here -- CurriculumsCfg.velocity_range widens it to
-    # VELOCITY_RANGE_MAX over training (see mdp/curriculums.py:widen_velocity_range). PLAY overrides
-    # this back to VELOCITY_RANGE_MAX directly (no curriculum during evaluation).
+    # Target linear velocity (m/s) along body X, resampled every resampling_time_range seconds. The
+    # robot must learn to hold a constant forward/backward speed rather than travel to and hold a
+    # fixed position (see UniformVelocityCommand in mdp/commands.py).
+    # Both ranges and resampling_time_range below are the CURRICULUM START values -- CurriculumsCfg
+    # widens ranges to VELOCITY_RANGE_MAX and narrows resampling_time_range to RESAMPLING_TIME_MIN
+    # over training (see mdp/curriculums.py:linear_range_curriculum). PLAY overrides both straight to
+    # their end values (no curriculum during evaluation).
     target_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         ranges=(0.0, 0.0),
@@ -375,18 +378,34 @@ class CurriculumsCfg:
     """Curriculum terms for the MDP."""
 
     # Widen target_velocity's sampling range from (0.0, 0.0) to VELOCITY_RANGE_MAX over the first
-    # VELOCITY_CURRICULUM_STEPS environment steps -- lets the policy learn to balance in place before
+    # COMMAND_CURRICULUM_STEPS environment steps -- lets the policy learn to balance in place before
     # it has to learn the lean-forward-to-accelerate coupling needed to track a nonzero body velocity
     # target, instead of facing the full range from step 0. See mdp/curriculums.py.
     velocity_range = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
             "address": "commands.target_velocity.ranges",
-            "modify_fn": mdp.widen_velocity_range,
+            "modify_fn": mdp.linear_range_curriculum,
             "modify_params": {
                 "start_range": (0.0, 0.0),
                 "end_range": VELOCITY_RANGE_MAX,
-                "num_steps": VELOCITY_CURRICULUM_STEPS,
+                "num_steps": COMMAND_CURRICULUM_STEPS,
+            },
+        },
+    )
+    # Narrow target_velocity's resampling interval from every 20s to every RESAMPLING_TIME_MIN (5s)
+    # over the same COMMAND_CURRICULUM_STEPS -- once the policy can track a wide range of speeds, it
+    # also has to react to the target changing every few seconds instead of staying fixed for most of
+    # an episode. Same schedule/step count as velocity_range so both curricula finish together.
+    resampling_time = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "commands.target_velocity.resampling_time_range",
+            "modify_fn": mdp.linear_range_curriculum,
+            "modify_params": {
+                "start_range": (20.0, 20.0),
+                "end_range": RESAMPLING_TIME_MIN,
+                "num_steps": COMMAND_CURRICULUM_STEPS,
             },
         },
     )
@@ -435,10 +454,12 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         self.scene.env_spacing = 2.5
         # disable observation noise during play
         self.observations.policy.enable_corruption = False
-        # Evaluate at the full trained range directly -- a fresh env's common_step_counter starts at
-        # 0, so without this the velocity_range curriculum would make play start narrow too.
+        # Evaluate at the full trained range/fastest resampling directly -- a fresh env's
+        # common_step_counter starts at 0, so without this both curricula would start narrow again.
         self.curriculum.velocity_range = None
+        self.curriculum.resampling_time = None
         self.commands.target_velocity.ranges = VELOCITY_RANGE_MAX
+        self.commands.target_velocity.resampling_time_range = RESAMPLING_TIME_MIN
         # keep push_robot active during play to see how the policy handles disturbances
         # Shortened for play: the training config's episode_length_s=200.0 is too long to watch a
         # respawn happen (time_out still works either way -- it's just a long wait at 200s).
