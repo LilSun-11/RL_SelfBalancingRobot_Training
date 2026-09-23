@@ -1,5 +1,5 @@
 # Self-Balancing TWIP Robot (Isaac Lab)
-
+# Training Self-Balance Robot on Isaac Sim/Issac Lab
 ## Overview
 
 This project trains a two-wheeled self-balancing robot (a "TWIP" — two-wheeled inverted pendulum)
