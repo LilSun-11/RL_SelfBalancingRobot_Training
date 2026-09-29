@@ -29,6 +29,12 @@ This structure (and the requirements/troubleshooting sections below) follows the
 [sim2real-line-following-robot](https://github.com/SangHuynhVan272/sim2real-line-following-robot), a
 similar sim-to-real Isaac Lab -> ESP32 project, adapted to this robot and to a Ubuntu-only workflow.
 
+### Demo
+
+| Simulation (Isaac Sim, trained policy) | Real robot (ESP32) |
+|---|---|
+| [docs/media/RL_SBR.webm](docs/media/RL_SBR.webm) | [docs/media/Real_SBR.MOV](docs/media/Real_SBR.MOV) |
+
 ### Policy input/output
 
 The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`) that maps 7
