@@ -25,10 +25,6 @@ recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
   sim-to-real step of the pipeline; this repository currently covers everything up to the ONNX
   export, and the ONNX-to-firmware conversion/flashing tooling is not included here yet.
 
-This structure (and the requirements/troubleshooting sections below) follows the layout of
-[sim2real-line-following-robot](https://github.com/SangHuynhVan272/sim2real-line-following-robot), a
-similar sim-to-real Isaac Lab -> ESP32 project, adapted to this robot and to a Ubuntu-only workflow.
-
 ### Demo
 
 | Simulation (Isaac Sim, trained policy) | Real robot (ESP32) |
