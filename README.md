@@ -14,9 +14,9 @@ recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
       -> convert the exported policy to a C array/header -> flash it onto an ESP32
 ```
 
-- The robot chassis was modeled in CAD and exported as a URDF with STL meshes
-  (`assets/RobotTwoWheel/`), imported directly into Isaac Sim at simulation start (no prebaked USD),
-  so the simulated robot never drifts out of sync with the CAD source.
+- The robot is described by `assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf`
+  (box/cylinder primitives with per-part masses and analytic inertias), imported directly into Isaac
+  Sim at simulation start (no prebaked USD), so the simulated robot never drifts out of sync with it.
 - Training uses Isaac Lab's manager-based RL environment (`source/SelfBalancing/`) with RSL-RL/PPO:
   the robot balances upright while tracking a randomly commanded forward/backward body velocity.
 - `scripts/rsl_rl/play.py` evaluates a trained checkpoint and automatically exports it to both
@@ -35,23 +35,39 @@ recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
 
 ### Policy input/output
 
-The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`) that maps 7
-observations straight to 2 wheel torques:
+The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`, no
+observation normalization) that maps 7 observations straight to 2 wheel torques:
 
 ```text
-[pitch angle, pitch rate, wheel_L distance, wheel_R distance, wheel_L velocity, wheel_R velocity,
+[pitch angle, pitch rate, wheel_L velocity, wheel_R velocity, last action_L, last action_R,
  target velocity] -> MLP 7 -> 32 -> 32 -> 2 -> [wheel_L torque, wheel_R torque]
 ```
 
-| # | Observation (input) | Source | Unit |
-|---|---|---|---|
-| 1 | pitch angle | `mdp.imu_pitch_angle` | rad |
-| 2 | pitch rate | `mdp.imu_pitch_rate` | rad/s |
-| 3 | wheel_L distance traveled | `mdp.wheel_distance` (`joint_L`) | m |
-| 4 | wheel_R distance traveled | `mdp.wheel_distance` (`joint_R`) | m |
-| 5 | wheel_L angular velocity | `mdp.joint_vel` (`joint_L`) | rad/s |
-| 6 | wheel_R angular velocity | `mdp.joint_vel` (`joint_R`) | rad/s |
-| 7 | target body velocity | `mdp.generated_commands` (`target_velocity`) | m/s |
+Observations are concatenated in exactly this order (`ObservationsCfg.PolicyCfg` in
+`selfbalancing_env_cfg.py`). Gaussian noise is added during training only; play/evaluation runs
+without it.
+
+| # | Observation (input) | Source | Unit | Training noise (std) |
+|---|---|---|---|---|
+| 1 | pitch angle | `mdp.imu_pitch_angle` | rad | 0.02 |
+| 2 | pitch rate | `mdp.imu_pitch_rate` | rad/s | 0.04 |
+| 3 | wheel_L angular velocity | `mdp.joint_vel` (`wheel1_motor1_joint`) | rad/s | 0.05 |
+| 4 | wheel_R angular velocity | `mdp.joint_vel` (`wheel2_motor2_joint`) | rad/s | 0.05 |
+| 5 | previous action, wheel_L | `mdp.last_action_index` (`index=0`) | raw, `[-1, 1]` | — |
+| 6 | previous action, wheel_R | `mdp.last_action_index` (`index=1`) | raw, `[-1, 1]` | — |
+| 7 | target body velocity | `mdp.generated_commands` (`target_velocity`) | m/s | — |
+
+- **Previous action (5–6):** the wheel actuator delays each command by 2–8 physics steps (10–40 ms,
+  `DelayedPDActuatorCfg` in `robot.py`) to model the motor driver's reversal lag, so the torque
+  applied now is a command from a few steps ago. Seeing its own last command lets the policy account
+  for that. These are the *raw* policy outputs from the previous control step, before any scaling.
+- **Target velocity (7):** a curriculum widens its range from 0 to ±0.5 m/s and shortens how often it
+  changes from every 20 s to every 5 s over the first 20000 env steps (~625 iterations). Play uses
+  the final values directly.
+- **Sign convention:** positive wheel velocity/torque drives the robot forward (+X). Tilting toward
+  +X gives a *negative* pitch angle. The pitch rate is `root_ang_vel_b[:, 1]`, which is the
+  **negative** of d(pitch angle)/dt (measured with `scripts/pid_balance.py`). Firmware that computes
+  the rate as +d(pitch)/dt must flip its sign before feeding it to the policy.
 
 | # | Action (output) | Range | Unit |
 |---|---|---|---|
@@ -60,8 +76,8 @@ observations straight to 2 wheel torques:
 
 The exported `policy.onnx`/`policy.pt` (see [Evaluate a trained policy and export
 it](#evaluate-a-trained-policy-and-export-it)) keeps this exact 7-in/2-out contract — the ESP32
-firmware needs to feed it observations in this order and units, and apply the same `[-1, 1] ->
-torque` scaling to its raw output.
+firmware needs to feed it observations in this order, units and sign convention, and apply the same
+`[-1, 1] -> torque` scaling to its raw output.
 
 **Keywords:** self-balancing robot, TWIP, reinforcement learning, Isaac Lab, RSL-RL, PPO, sim-to-real, ESP32
 
@@ -69,11 +85,12 @@ torque` scaling to its raw output.
 
 | Path                                                             | Purpose                                                      |
 | ----------------------------------------------------------------- | ------------------------------------------------------------ |
-| `assets/RobotTwoWheel/`                                          | URDF + STL meshes for the physical robot chassis              |
+| `assets/RobotTwoWheel/`                                          | Robot URDFs: `SelfBalancingRobot_simplified.urdf` (used for training) and the older STL-mesh `RobotTwoWheel.urdf` |
 | `source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/` | Robot config, MDP terms (actions/commands/events/observations/rewards/terminations), env config |
 | `source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/agents/` | RSL-RL PPO hyperparameters                                     |
 | `scripts/rsl_rl/train.py`, `scripts/rsl_rl/play.py`               | Train / evaluate + export (.pt and .onnx) programs             |
 | `scripts/list_envs.py`, `scripts/zero_agent.py`, `scripts/random_agent.py` | Sanity-check scripts (list registered tasks, zero/random action rollouts) |
+| `scripts/pid_balance.py`                                          | Runs the firmware PID controller in Isaac Sim as a baseline / sim sanity check |
 | `logs/rsl_rl/selfbalancing/<timestamp>/`                          | Per-run checkpoints, TensorBoard logs, and `exported/policy.onnx` |
 
 ## 2. Requirements
@@ -194,9 +211,10 @@ An example UI extension loads upon enabling your extension, defined in
 ## 5. Train and export your policy
 
 Two task variants are registered: `Template-SelfBalancing-v0` (training, 8196 parallel envs) and
-`Template-SelfBalancing-Play-v0` (playback/evaluation, 36 envs, no observation noise — see
+`Template-SelfBalancing-Play-v0` (playback/evaluation, 360 envs, no observation noise — see
 `SelfBalancingEnvCfg_PLAY` in `selfbalancing_env_cfg.py`). The robot's task is to stay upright while
-tracking a randomly commanded forward/backward body velocity (-0.4 to 0.4 m/s).
+tracking a randomly commanded forward/backward body velocity (curriculum up to -0.5 to 0.5 m/s, see
+[Policy input/output](#policy-inputoutput)).
 
 ### Train
 
