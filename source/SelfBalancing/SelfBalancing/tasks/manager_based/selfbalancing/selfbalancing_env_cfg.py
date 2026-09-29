@@ -16,11 +16,11 @@ from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 from . import mdp
 from .robot import TwoWheel_CFG
 
-WHEEL_JOINT_NAMES = ["joint_L", "joint_R"]  # RobotTwoWheel.urdf -- unlike the old wheel1/2_motor
+WHEEL_JOINT_NAMES = ["wheel1_motor1_joint", "wheel2_motor2_joint"]  # left (+Y), right (-Y)
 MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit in robot.py (inherited
-# from the old robot, UNCONFIRMED for this chassis -- base_link is ~5x heavier, motor may need revisiting)
+# from the old robot, UNCONFIRMED for this chassis -- motor may need revisiting)
 
-WHEEL_RADIUS = 0.033  # m — measured from the link_L/link_R.STL mesh bounding box
+WHEEL_RADIUS = 0.034  # m — wheel1/wheel2 cylinder radius in SelfBalancingRobot_simplified.urdf
 
 VELOCITY_RANGE_MAX = (-0.5, 0.5)  # m/s — final target_velocity range once the curriculum finishes
 RESAMPLING_TIME_MIN = (5.0, 5.0)  # s — final target_velocity resampling interval once the curriculum
@@ -119,35 +119,48 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        # Gaussian noise mimics a real IMU (accelerometer/gyro never read perfectly).
-        pitch_angle = ObsTerm(func=mdp.imu_pitch_angle, noise=Gnoise(mean=0.0, std=0.01))
-        pitch_rate = ObsTerm(func=mdp.imu_pitch_rate, noise=Gnoise(mean=0.0, std=0.02))
+        # Gaussian noise mimics a real IMU (accelerometer/gyro never read perfectly) -- bumped up a
+        # bit (0.01->0.02 rad, 0.02->0.04 rad/s) from the original values.
+        pitch_angle = ObsTerm(func=mdp.imu_pitch_angle, noise=Gnoise(mean=0.0, std=0.02))
+        pitch_rate = ObsTerm(func=mdp.imu_pitch_rate, noise=Gnoise(mean=0.0, std=0.04))
         # Distance traveled (m) per wheel since episode reset, from the wheel encoder angle -- kept
         # per-wheel (not averaged) so the policy can see both encoders independently.
-        wheel1_distance = ObsTerm(
-            func=mdp.wheel_distance,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[0]]),
-                "wheel_radius": WHEEL_RADIUS,
-            },
-        )
-        wheel2_distance = ObsTerm(
-            func=mdp.wheel_distance,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[1]]),
-                "wheel_radius": WHEEL_RADIUS,
-            },
-        )
+        # wheel1_distance = ObsTerm(
+        #     func=mdp.wheel_distance,
+        #     params={
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[0]]),
+        #         "wheel_radius": WHEEL_RADIUS,
+        #     },
+        # )
+        # wheel2_distance = ObsTerm(
+        #     func=mdp.wheel_distance,
+        #     params={
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[1]]),
+        #         "wheel_radius": WHEEL_RADIUS,
+        #     },
+        # )
         # Per-wheel angular velocity (rad/s) -- split into two 1D terms (like wheel1/2_distance
         # above) instead of one 2D joint_vel term, for a consistent declaration style.
+        # Gaussian noise mimics a real wheel encoder (quantization/count noise) -- std chosen small
+        # relative to typical operating speed (target_velocity up to 0.5 m/s / wheel_radius ~0.033 m
+        # -> ~15 rad/s).
         wheel1_vel = ObsTerm(
             func=mdp.joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[0]])},
+            noise=Gnoise(mean=0.0, std=0.05),
         )
         wheel2_vel = ObsTerm(
             func=mdp.joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=[WHEEL_JOINT_NAMES[1]])},
+            noise=Gnoise(mean=0.0, std=0.05),
         )
+        # Previous raw action per wheel ([-1, 1]). The wheels actuator is a DelayedPDActuatorCfg
+        # (robot.py), so the torque actually applied now is a command from a few steps ago -- without
+        # seeing its own recent commands the policy can't tell "braking already issued, still in the
+        # delay buffer" from "not braking yet", which shows up as late/sluggish direction reversals.
+        # Split into two 1D terms (like wheel1/2_vel above); index order matches WHEEL_JOINT_NAMES.
+        last_action1 = ObsTerm(func=mdp.last_action_index, params={"index": 0})
+        last_action2 = ObsTerm(func=mdp.last_action_index, params={"index": 1})
         # Target linear velocity (m/s) the policy needs to track.
         velocity_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_velocity"})
 
@@ -168,7 +181,7 @@ class EventCfg:
         func=mdp.randomize_rigid_body_material,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=["link_L", "link_R"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=["wheel1", "wheel2"]),
             "static_friction_range": (1.5, 1.5),
             "dynamic_friction_range": (1.2, 1.2),
             "restitution_range": (0.0, 0.0),
@@ -187,6 +200,24 @@ class EventCfg:
         },
     )
 
+    # Randomize chassis mass (base_link, ~1.09 kg nominal after merging motors/battery/upper base) --
+    # battery/wiring/mounting
+    # hardware variance in a real build isn't precisely known, and mass directly affects the gravity
+    # torque available to help/hinder overcoming wheel motor friction (see randomize_wheel_friction_
+    # motor below), so the policy needs exposure to a range of masses, not just the nominal one.
+    # "scale" (not "add") keeps the CoM/inertia proportional to whatever the nominal mass turns out to
+    # be, rather than an absolute kg offset that could be tiny or huge relative to it.
+    randomize_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
+            "mass_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "recompute_inertia": True,
+        },
+    )
+
     # Mechanical joint friction (motor/gearbox), distinct from wheel_friction (ground contact) and
     # from the actuator's own fixed damping (IdealPDActuatorCfg, damping=0.002) -- this is applied by
     # PhysX on top of actuator effort. Uses a custom function (not the built-in
@@ -200,11 +231,11 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
-            "friction_range": (0.010, 0.012),
+            "friction_range": (0.010, 0.014),
         },
     )
 
-    # Wheel axis (joint_L/joint_R, axis="0 1 0") = Y_robot = "pitch" in standard roll/pitch/yaw
+    # Wheel axis (wheel1/2_motor1/2_joint, axis="0 1 0") = Y_robot = "pitch" in standard roll/pitch/yaw
     # convention (unlike the old TWIP robot, whose wheel axis = X = "roll"), so the initial tilt must
     # randomize "pitch" here.
     reset_base = EventTerm(
@@ -217,8 +248,12 @@ class EventCfg:
         },
     )
 
+    # Uses the _symmetric variant (one shared offset per env, broadcast to both wheels) instead of
+    # the built-in reset_joints_by_offset (samples each wheel independently) -- currently a no-op
+    # either way since both ranges are degenerate (0.0, 0.0), but keeps the two wheels from starting
+    # already mismatched if these ranges are ever widened.
     reset_wheels = EventTerm(
-        func=mdp.reset_joints_by_offset,
+        func=mdp.reset_joints_by_offset_symmetric,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
@@ -237,10 +272,10 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_external_force_local_x,
         mode="interval",
-        interval_range_s=(5.0, 7.0),
+        interval_range_s=(3.0, 5.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (-100.0, 100.0),
+            "force_range": (-50.0, 50.0),
             "body_offset_z": 0.10,
         },
     )
@@ -339,7 +374,7 @@ class RewardsCfg:
 
     # Smooth actions: suppresses high-frequency wheel jitter (observed during play -- causes violent
     # pitch oscillation and feeds back into IMU noise).
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.0002)
 
 
 @configclass
@@ -450,8 +485,8 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         super().__post_init__()
 
         # smaller scene for play/observation
-        self.scene.num_envs = 36
-        self.scene.env_spacing = 2.5
+        self.scene.num_envs = 360
+        self.scene.env_spacing = 2.0
         # disable observation noise during play
         self.observations.policy.enable_corruption = False
         # Evaluate at the full trained range/fastest resampling directly -- a fresh env's

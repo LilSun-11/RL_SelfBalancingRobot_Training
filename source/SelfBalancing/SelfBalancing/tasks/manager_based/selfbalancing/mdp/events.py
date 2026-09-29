@@ -25,7 +25,7 @@ def push_by_external_force_local_x(
     "push along the direction of travel" instead of injecting an unwanted turning moment.
 
     Body X is the rolling direction the wheels can actively correct; the wheel axis itself
-    (joint_L/joint_R, Y_robot) is not a useful push direction -- that would just tip the robot
+    (Y_robot) is not a useful push direction -- that would just tip the robot
     sideways with no way to recover.
 
     Applied at +Z above base_link's true CoM (body_offset_z) to simulate a hit on the upper body
@@ -54,6 +54,43 @@ def push_by_external_force_local_x(
         env_ids=env_ids,
         is_global=False,
     )
+
+
+def reset_joints_by_offset_symmetric(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    position_range: tuple[float, float],
+    velocity_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Like the built-in mdp.reset_joints_by_offset, but samples ONE offset per env (broadcast
+    across all selected joints) instead of one independently per joint -- keeps both wheels at the
+    exact same reset position/velocity offset instead of letting them start already mismatched.
+
+    Only makes a difference when position_range/velocity_range are non-degenerate (min != max); with
+    a degenerate range like (0.0, 0.0) both versions are equivalent (every sample is 0 anyway).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if asset_cfg.joint_ids != slice(None):
+        iter_env_ids = env_ids[:, None]
+    else:
+        iter_env_ids = env_ids
+
+    joint_pos = asset.data.default_joint_pos[iter_env_ids, asset_cfg.joint_ids].clone()
+    joint_vel = asset.data.default_joint_vel[iter_env_ids, asset_cfg.joint_ids].clone()
+
+    # (len(env_ids), 1) broadcasts across the joint dimension -- same offset for every joint in a
+    # given env, unlike the built-in version's per-joint sampling.
+    joint_pos += sample_uniform(*position_range, (len(env_ids), 1), joint_pos.device)
+    joint_vel += sample_uniform(*velocity_range, (len(env_ids), 1), joint_vel.device)
+
+    joint_pos_limits = asset.data.soft_joint_pos_limits[iter_env_ids, asset_cfg.joint_ids]
+    joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+    joint_vel_limits = asset.data.soft_joint_vel_limits[iter_env_ids, asset_cfg.joint_ids]
+    joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
+
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
 
 
 def randomize_wheel_motor_friction_symmetric(

@@ -36,8 +36,8 @@ def imu_ang_vel(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def imu_pitch_angle(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Body tilt angle (rad) about the wheel axis (Y_robot -- RobotTwoWheel.urdf's joint_L/joint_R
-    use axis="0 1 0", unlike the old TWIP robot which used X), from projected_gravity_b -- a CLEAN
+    """Body tilt angle (rad) about the wheel axis (Y_robot -- the wheel joints use axis="0 1 0",
+    unlike the old TWIP robot which used X), from projected_gravity_b -- a CLEAN
     signal, unlike a raw accelerometer.
 
     projected_gravity_b isn't corrupted by body motion, matching the already-filtered
@@ -80,3 +80,12 @@ def wheel_distance(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, wheel_radi
     asset: Articulation = env.scene[asset_cfg.name]
     wheel_angle = asset.data.joint_pos[:, asset_cfg.joint_ids].mean(dim=1)
     return (wheel_angle * wheel_radius).unsqueeze(-1)
+
+
+def last_action_index(env: ManagerBasedRLEnv, index: int) -> torch.Tensor:
+    """One element of the previous action (the built-in mdp.last_action only returns the whole
+    vector), so each wheel's last command can be declared as its own 1D observation term.
+
+    Shape: (N, 1).
+    """
+    return env.action_manager.action[:, index].unsqueeze(1)

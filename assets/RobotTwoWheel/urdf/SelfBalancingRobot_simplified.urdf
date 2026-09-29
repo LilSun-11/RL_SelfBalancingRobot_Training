@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simplified version of SelfBalancingRobot.urdf, using box/cylinder
+     primitives instead of custom meshes. Inertia tensors are computed
+     analytically for each part as a uniform solid box or cylinder, using
+     the given masses:
+       base_link=0.3kg, upper_base_link=0.235kg, battery_link=0.215kg,
+       motor1/motor2=0.17kg each, wheel1/wheel2=0.035kg each. -->
+<robot
+  name="SelfBalancingRobot">
+  <link
+    name="base_link">
+    <inertial>
+      <origin xyz="0 0 0.0375" rpy="0 0 0" />
+      <mass value="0.3" />
+      <inertia ixx="1.140625E-03" ixy="0.0" ixz="0.0"
+               iyy="5.0063E-04" iyz="0.0" izz="1.36E-03" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.0375" rpy="0 0 0" />
+      <geometry>
+        <box size="0.120 0.2 0.075" />
+      </geometry>
+      <material name="">
+        <color rgba="0.89412 0.89412 0.89412 0.8" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0375" rpy="0 0 0" />
+      <geometry>
+        <box size="0.120 0.2 0.075" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="upper_base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.235" />
+      <inertia ixx="7.295E-04" ixy="0.0" ixz="0.0"
+               iyy="3.0928E-04" iyz="0.0" izz="9.2030E-04" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.113 0.185 0.055" />
+      </geometry>
+      <material name="">
+        <color rgba="0.89412 0.89412 0.89412 0.8" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.113 0.185 0.055" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="battery_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.215" />
+      <inertia ixx="1.1065E-04" ixy="0.0" ixz="0.0"
+        iyy="1.2472E-04" iyz="0.0" izz="2.2104E-04" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.081 0.076 0.02" />
+      </geometry>
+      <material name="">
+        <color rgba="0.89412 0.89412 0.89412 0.8" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.081 0.076 0.02" />
+      </geometry>
+    </collision>
+  </link>
+    <link name="motor1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.17" />
+      <inertia ixx="7.572E-05" ixy="0.0" ixz="0.0" iyy="5.396E-05" iyz="0.0" izz="6.709E-05" />
+    </inertial>
+    <visual>
+        <geometry><box size="0.040 0.056 0.047" /></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <material name="gray" />
+    </visual>
+    <collision>
+        <geometry><box size="0.040 0.056 0.047" /></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+    </collision>
+  </link>
+
+  <link name="motor2">
+    <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.17" />
+        <inertia ixx="7.572E-05" ixy="0.0" ixz="0.0" iyy="5.396E-05" iyz="0.0" izz="6.709E-05" />
+    </inertial>
+    <visual>
+        <geometry><box size="0.040 0.056 0.047" /></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <material name="gray" />
+    </visual>
+    <collision>
+        <geometry><box size="0.040 0.056 0.047" /></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+    </collision>
+  </link>
+
+  <link name="wheel1">
+    <inertial>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+        <mass value="0.035" />
+        <inertia ixx="1.2087E-05" ixy="0.0" ixz="0.0" iyy="1.2087E-05" iyz="0.0" izz="2.023E-05" />
+    </inertial>
+    <visual>
+        <geometry><cylinder radius="0.034" length="0.026" /></geometry>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+        <material name="gray" />
+    </visual>
+    <collision>
+        <geometry><cylinder radius="0.034" length="0.026" /></geometry>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+    </collision>
+  </link>
+
+  <link name="wheel2">
+    <inertial>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+        <mass value="0.035" />
+        <inertia ixx="1.2087E-05" ixy="0.0" ixz="0.0" iyy="1.2087E-05" iyz="0.0" izz="2.023E-05" />
+    </inertial>
+    <visual>
+        <geometry><cylinder radius="0.034" length="0.026" /></geometry>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+        <material name="gray" />
+    </visual>
+    <collision>
+        <geometry><cylinder radius="0.034" length="0.026" /></geometry>
+        <origin xyz="0 0 0" rpy="1.5707 0 0" />
+    </collision>
+  </link>
+
+  <joint name="upper_base_joint" type="fixed">
+    <origin  xyz="0 0 0.1025"  rpy="0 0 0" />
+    <parent  link="base_link" />
+    <child  link="upper_base_link" />
+    <axis   xyz="0 1 0" />
+  </joint>
+  
+  <joint name="battery_upper_joint" type="fixed">
+    <origin xyz="0 0 -0.01750" rpy="0 0 0" />
+    <parent link="upper_base_link" />
+    <child link="battery_link" />
+    <axis xyz="0 1 0" />
+  </joint>
+
+  <joint name="motor1_base_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="motor1" />
+    <origin xyz="0 0.072 -0.0235" rpy="0 0 0" />
+    <axis xyz="1 0 0" />
+  </joint>   
+
+  <joint name="motor2_base_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="motor2" />
+    <origin xyz="0 -0.072 -0.0235" rpy="0 0 0" />
+    <axis xyz="1 0 0" />
+  </joint> 
+
+  <joint name="wheel1_motor1_joint" type="continuous">
+    <parent link="motor1" />
+    <child link="wheel1" />
+    <origin xyz="0 0.053 -0.0105" rpy="0 0 0" />
+    <axis xyz="0 1 0" />
+  </joint>   
+
+  <joint name="wheel2_motor2_joint" type="continuous">
+    <parent link="motor2" />
+    <child link="wheel2" />
+    <origin xyz="0 -0.053 -0.0105" rpy="0 0 0" />
+    <axis xyz="0 1 0" />
+  </joint> 
+</robot>

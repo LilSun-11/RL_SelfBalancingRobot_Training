@@ -2,31 +2,30 @@
 import os
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import IdealPDActuatorCfg
+from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
 # Repo root, resolved relative to this file so the asset path works regardless of where the repo
 # is cloned (not hardcoded to one machine's home directory).
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *([os.pardir] * 6)))
-ROBOT_TWO_WHEEL_URDF_PATH = os.path.join(_REPO_ROOT, "assets", "RobotTwoWheel", "urdf", "RobotTwoWheel.urdf")
+ROBOT_TWO_WHEEL_URDF_PATH = os.path.join(
+    _REPO_ROOT, "assets", "RobotTwoWheel", "urdf", "SelfBalancingRobot_simplified.urdf"
+)
 
 ##
-# TWIP robot configuration (RobotTwoWheel -- a real URDF exported from SolidWorks with STL meshes,
-# unlike the old TwoWheel.urdf which used primitive geometry)
+# TWIP robot configuration (SelfBalancingRobot_simplified -- box/cylinder primitives with
+# analytically computed inertias per part, instead of the SolidWorks STL meshes of RobotTwoWheel.urdf)
 ##
 
 TwoWheel_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
-        # Spawn straight from the source URDF (not a prebaked USD) so it never drifts from URDF
-        # edits. Keeps the original ROS package layout (RobotTwoWheel/urdf/*.urdf +
-        # RobotTwoWheel/meshes/*.STL) so the Isaac Sim URDF importer can resolve
-        # "package://RobotTwoWheel/meshes/..." on its own.
+        # Spawn straight from the source URDF (not a prebaked USD) so it never drifts from URDF edits.
         asset_path=ROBOT_TWO_WHEEL_URDF_PATH,
         fix_base=False,
         root_link_name="base_link",
-        # Only 3 links (base_link, link_L, link_R) joined by 2 continuous joints -- no fixed joints
-        # to merge (unlike the old TwoWheel.urdf, which had several).
-        merge_fixed_joints=False,
+        # Merges the fixed-joint links (upper_base_link, battery_link, motor1, motor2) into base_link,
+        # leaving 3 rigid bodies: base_link (~1.09 kg combined), wheel1, wheel2.
+        merge_fixed_joints=True,
         self_collision=False,
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             drive_type="force",
@@ -50,24 +49,33 @@ TwoWheel_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # joint_L/joint_R origin is z=-0.034 from base_link; wheel radius (link_L/R.STL bounding
-        # box) ~0.033 -> wheel bottom = -0.067 from base_link -> spawn base_link at 0.069 (with a
-        # small margin) so the wheels just touch the ground.
-        pos=(0.0, 0.0, 0.069),
+        # base_link->motor z=-0.0235, motor->wheel z=-0.0105, wheel radius=0.034 -> wheel bottom =
+        # -0.068 from base_link -> spawn base_link at 0.070 (small margin) so the wheels just touch.
+        pos=(0.0, 0.0, 0.070),
         joint_pos={
-            "joint_L": 0.0,
-            "joint_R": 0.0,
+            "wheel1_motor1_joint": 0.0,
+            "wheel2_motor2_joint": 0.0,
         },
     ),
     actuators={
-        "wheels": IdealPDActuatorCfg(
-            joint_names_expr=["joint_L", "joint_R"],
+        # DelayedPDActuatorCfg (not the plain IdealPDActuatorCfg) delays the commanded effort by a
+        # random number of PHYSICS steps, resampled every episode reset -- models the real motor
+        # driver/H-bridge's response lag when reversing direction (dead-time to avoid shoot-through,
+        # electrical/mechanical response), which the sim's actuator otherwise applies instantly. On
+        # real hardware, action reversals were observed to lag noticeably; a plain instant-torque
+        # actuator gives the policy no reason to ever compensate for that.
+        # min/max_delay are in physics steps (sim.dt=1/200s -> 5ms/step, see selfbalancing_env_cfg.py)
+        # -- 2-8 steps (10-40ms) is a placeholder guess, NOT measured from the real motor. Replace with
+        # the actual observed reversal lag once measured on hardware.
+        "wheels": DelayedPDActuatorCfg(
+            joint_names_expr=["wheel1_motor1_joint", "wheel2_motor2_joint"],
             # Inherited from the old robot (same JGB37-520 motor assumption) -- UNCONFIRMED for this
-            # chassis, which is much heavier (~0.967 kg vs ~0.184 kg base_link), so real torque needs
-            # are likely higher. Check the motor datasheet.
+            # chassis (~1.16 kg total), so real torque needs may be higher. Check the motor datasheet.
             effort_limit=0.49,
             stiffness=0.0,
             damping=0.002,
+            min_delay=2,
+            max_delay=8,
         ),
     },
 )
