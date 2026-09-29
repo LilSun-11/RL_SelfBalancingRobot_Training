@@ -33,7 +33,9 @@ similar sim-to-real Isaac Lab -> ESP32 project, adapted to this robot and to a U
 
 | Simulation (Isaac Sim, trained policy) | Real robot (ESP32) |
 |---|---|
-| [docs/media/RL_SBR.webm](docs/media/RL_SBR.webm) | [docs/media/Real_SBR.MOV](docs/media/Real_SBR.MOV) |
+| [![Simulation demo](docs/media/RL_SBR.gif)](docs/media/RL_SBR.webm) | [![Real robot demo](docs/media/Real_SBR.gif)](docs/media/Real_SBR.mp4) |
+
+*Click a preview to open the full-quality video.*
 
 ### Policy input/output
 
