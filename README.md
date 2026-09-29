@@ -36,7 +36,7 @@ recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
 ### Policy input/output
 
 The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`) that maps 7
-observations straight to 2 wheel torques, no PID loop in between:
+observations straight to 2 wheel torques:
 
 ```text
 [pitch angle, pitch rate, wheel_L distance, wheel_R distance, wheel_L velocity, wheel_R velocity,
