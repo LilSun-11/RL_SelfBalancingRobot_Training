@@ -16,9 +16,9 @@ The end-to-end workflow is:
   the robot balances upright while tracking a randomly commanded forward/backward body velocity.
 - `scripts/rsl_rl/play.py` evaluates a trained checkpoint and automatically exports it to both
   `policy.pt` (JIT) and `policy.onnx` under `logs/rsl_rl/<experiment>/<run>/exported/`.
-- Converting that `.onnx` file into a C array/header and flashing it onto an ESP32 is the final,
-  sim-to-real step of the pipeline; this repository currently covers everything up to the ONNX
-  export, and the ONNX-to-firmware conversion/flashing tooling is not included here yet.
+- `tools/export_policy_header.py` converts that `.onnx` file into a C header, which the ESP32
+  firmware in [`firmware/`](firmware/) compiles in and runs at 100 Hz (see
+  [firmware/README.md](firmware/README.md) for wiring, flashing and serial commands).
 
 ### Demo
 
@@ -86,6 +86,9 @@ firmware needs to feed it observations in this order, units and sign convention,
 | `scripts/rsl_rl/train.py`, `scripts/rsl_rl/play.py`               | Train / evaluate + export (.pt and .onnx) programs             |
 | `scripts/list_envs.py`, `scripts/zero_agent.py`, `scripts/random_agent.py` | Sanity-check scripts (list registered tasks, zero/random action rollouts) |
 | `scripts/pid_balance.py`                                          | Runs the firmware PID controller in Isaac Sim as a baseline / sim sanity check |
+| `tools/export_policy_header.py`                                   | Converts an exported `policy.onnx` into `policy_weights.h` for the firmware (`--verify` checks it against ONNX Runtime) |
+| `firmware/policy_controller/`                                     | ESP32 PlatformIO project that runs the trained policy on the real robot |
+| `firmware/pid_controller/`                                        | ESP32 PlatformIO project with a classic PID balance controller (baseline) |
 | `logs/rsl_rl/selfbalancing/<timestamp>/`                          | Per-run checkpoints, TensorBoard logs, and `exported/policy.onnx` |
 
 ## 2. Requirements
@@ -392,6 +395,10 @@ A virtual environment keeps project packages isolated, protects your system Pyth
 Supervisor: **Ahn Kyoung Kwan** · Author: **Nguyen Xuan Tra**
 
 > 🐧 This guide is written for **Linux (Ubuntu 22.04 / 24.04)**. Other distributions work too; only the package install commands differ.
+
+> 📁 This guide builds a firmware project from scratch for an ESP32-S3 board. The ready-to-build
+> firmware used for the demo (ESP32 DevKit + LSM6DS3 IMU) is already in [`firmware/`](firmware/),
+> and the converter is in [`tools/`](tools/) — see [firmware/README.md](firmware/README.md).
 
 ---
 

@@ -1,0 +1,4 @@
+numpy
+onnx
+# optional, only needed for --verify
+onnxruntime
