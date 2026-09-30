@@ -7,12 +7,7 @@ with reinforcement learning in Isaac Lab, then deploys the trained policy to rea
 
 The end-to-end workflow is:
 
-```text
-recreate the 2-wheel robot as a URDF -> import it into Isaac Sim
-      -> train a balancing / velocity-tracking task with RSL-RL (PPO)
-      -> evaluate the policy and export it to .onnx
-      -> convert the exported policy to a C array/header -> flash it onto an ESP32
-```
+![End-to-end workflow: physical robot -> URDF model -> Isaac Sim -> training in Isaac Lab (PPO) -> policy evaluation -> export .onnx to a C header -> deploy to the robot](docs/media/workflow.png)
 
 - The robot is described by `assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf`
   (box/cylinder primitives with per-part masses and analytic inertias), imported directly into Isaac
