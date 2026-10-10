@@ -93,7 +93,7 @@ int64_t encLCount=0, encRCount=0;
 int64_t encLPrev=0, encRPrev=0;
 float   wheelLVel=0, wheelRVel=0;
 
-// hanh dong RAW (truoc U_SCALE/MOTOR_SIGN) cua policy o tick TRUOC -- dung lam obs last_action1/2
+// hanh dong cua policy o tick TRUOC, da kep [-1,1] (truoc U_SCALE/MOTOR_SIGN) -- dung lam obs last_action1/2
 // (mdp.last_action_index trong selfbalancing_env_cfg.py doc dung gia tri nay, khong phai gia tri
 // da nhan scale/MOTOR_SIGN). Cap nhat o cuoi loop() ngay sau policyForward().
 float prevAct[POLICY_ACT_DIM] = {0.0f, 0.0f};
@@ -503,7 +503,10 @@ void loop(){
   unsigned long t0=micros();
   policyForward(obs, act);              // <-- tra ra POLICY_ACT_DIM gia tri
   inferUs = micros()-t0;
-  prevAct[0]=act[0]; prevAct[1]=act[1];  // luu lai (RAW, truoc scale) cho obs last_action1/2 tick sau
+  // Kep ve [-1,1] giong clip_actions=1.0 khi train (rsl_rl_ppo_cfg.py): RslRlVecEnvWrapper kep action
+  // TRUOC khi dua vao env, nen obs last_action1/2 trong sim chi nam trong [-1,1].
+  act[0]=constrain(act[0],-1.0f,1.0f); act[1]=constrain(act[1],-1.0f,1.0f);
+  prevAct[0]=act[0]; prevAct[1]=act[1];  // luu lai (da kep, truoc scale) cho obs last_action1/2 tick sau
 
   float uL, uR;
   if(WHEEL_SWAP){ uL = act[1]; uR = act[0]; }
