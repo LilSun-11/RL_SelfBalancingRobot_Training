@@ -66,6 +66,16 @@ def imu_pitch_rate(env: ManagerBasedRLEnv) -> torch.Tensor:
     return robot.data.root_ang_vel_b[:, 1].unsqueeze(1)
 
 
+def imu_yaw_rate(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Yaw rate (rad/s) about the body Z axis, i.e. what the IMU's Z gyro measures -- positive =
+    turning left (counter-clockwise seen from above), same sign as UniformYawRateCommand.
+
+    Shape: (N, 1).
+    """
+    robot = env.scene["robot"]
+    return robot.data.root_ang_vel_b[:, 2].unsqueeze(1)
+
+
 def wheel_distance(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, wheel_radius: float = 0.034) -> torch.Tensor:
     """Distance traveled (m), computed directly from wheel joint angle (joint_pos).
 
@@ -89,3 +99,14 @@ def last_action_index(env: ManagerBasedRLEnv, index: int) -> torch.Tensor:
     Shape: (N, 1).
     """
     return env.action_manager.action[:, index].unsqueeze(1)
+
+
+def relative_yaw(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Yaw angle (rad) relative to the heading the robot spawned with, wrapped to [-pi, pi] -- positive
+    = rotated left (counter-clockwise seen from above). The spawn heading is recorded by the
+    UniformYawCommand term ``command_name``, so this is in the same frame as its target. On the real
+    robot this is the gyro Z rate integrated from 0 at start-up.
+
+    Shape: (N, 1).
+    """
+    return env.command_manager.get_term(command_name).relative_yaw.unsqueeze(1)

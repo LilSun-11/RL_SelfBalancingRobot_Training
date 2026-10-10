@@ -98,12 +98,18 @@ def randomize_wheel_motor_friction_symmetric(
     env_ids: torch.Tensor,
     friction_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    asymmetry: float = 0.0,
 ) -> None:
     """Randomize motor joint friction (static/dynamic/viscous), giving BOTH wheels the SAME value per
     env (broadcast (E,1) -> (E, num_joints)) -- unlike the built-in mdp.randomize_joint_parameters,
     which samples independently per joint and could make the two wheels' friction diverge.
     Static/dynamic/viscous are still sampled independently of each other, dynamic clamped <= static
     as expected physically.
+
+    ``asymmetry`` > 0 then scales each wheel by its own factor in [1 - asymmetry, 1 + asymmetry]
+    (shared by static/dynamic/viscous, so dynamic <= static still holds). This mimics the left/right
+    motor mismatch of the real robot, which makes it drift/spin with zero commands -- in a perfectly
+    symmetric sim the policy never has to correct for that.
 
     Isaac Sim >=5.0 treats this value as an effort unit (Nm), not a unitless coefficient -- keep
     friction_range small relative to the actuator's effort_limit.
@@ -118,6 +124,10 @@ def randomize_wheel_motor_friction_symmetric(
     static = sample_uniform(*friction_range, (len(env_ids), 1), asset.device)
     dynamic = torch.minimum(sample_uniform(*friction_range, (len(env_ids), 1), asset.device), static)
     viscous = sample_uniform(*friction_range, (len(env_ids), 1), asset.device)
+    if asymmetry > 0.0:
+        num_joints = asset.num_joints if isinstance(joint_ids, slice) else len(joint_ids)
+        per_wheel = sample_uniform(1.0 - asymmetry, 1.0 + asymmetry, (len(env_ids), num_joints), asset.device)
+        static, dynamic, viscous = static * per_wheel, dynamic * per_wheel, viscous * per_wheel
 
     asset.write_joint_friction_coefficient_to_sim(
         joint_friction_coeff=static,

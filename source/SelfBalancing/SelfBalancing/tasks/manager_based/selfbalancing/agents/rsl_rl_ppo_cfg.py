@@ -14,6 +14,11 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 1000
     save_interval = 50
     experiment_name = "selfbalancing"
+    # Clip raw actions to [-1, 1] before they reach the env. Without it the policy can output huge raw
+    # actions at no physical cost (the actuator saturates torque anyway), and since last_action1/2 feed
+    # them back as observations, they snowball until action_rate_l2 overflows (seen: reward ~ -3e18,
+    # value loss inf, then "normal expects all elements of std >= 0.0").
+    clip_actions = 1.0
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=False,

@@ -1,4 +1,6 @@
 # selfbalancing_env_cfg.py
+import math
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
@@ -22,9 +24,21 @@ MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit i
 
 WHEEL_RADIUS = 0.034  # m — wheel1/wheel2 cylinder radius in SelfBalancingRobot_simplified.urdf
 
-VELOCITY_RANGE_MAX = (-0.5, 0.5)  # m/s — final target_velocity range once the curriculum finishes
-RESAMPLING_TIME_MIN = (5.0, 5.0)  # s — final target_velocity resampling interval once the curriculum
-# finishes (starts at 20s, see CommandsCfg.target_velocity below)
+VELOCITY_RANGE_MAX = (-0.15, 0.15)  # m/s — target_velocity sampling range
+VELOCITY_RESAMPLING_TIME = (5.0, 7.0)  # s — target_velocity is resampled after a random 3-5 s interval
+# YAW_RATE_RANGE_MAX = (-0.3, 0.3)  # rad/s, + = turn left — target_yaw_rate sampling range (disabled)
+# YAW_RATE_RESAMPLING_TIME = (5.0, 7.0)  # s — target_yaw_rate resampling interval (disabled)
+YAW_RANGE_MAX = (-math.pi, math.pi)  # rad, + = left of the spawn heading — target_yaw sampling range
+YAW_RESAMPLING_TIME = (5.0, 7.0)  # s — target_yaw is resampled after a random 5-7 s interval
+YAW_MAX_STEP = math.radians(60.0)
+YAW_CURRICULUM_ITERATIONS = 2000  # PPO iterations with target_yaw held at 0 before YAW_RANGE_MAX is enabled
+YAW_CURRICULUM_STEPS = YAW_CURRICULUM_ITERATIONS * 32  # env steps (num_steps_per_env = 32 in
+# agents/rsl_rl_ppo_cfg.py); env.common_step_counter restarts at 0 on every launch, --resume included  # rad — each new target_yaw is within +-30 deg of the previous one
+# The constants below are only used by the (currently disabled) curricula in CurriculumsCfg.
+YAW_GATE_MAX_FALL_RATE = 0.1  # fraction of resetting envs that fell (vs. timed out)
+YAW_GATE_MAX_VELOCITY_ERROR = 0.02  # m/s, mean |target - actual| forward velocity
+RESAMPLING_TIME_MIN = (5.0, 5.0)  # s — final target_yaw_rate resampling interval once its curriculum
+# finishes (starts at 20s, see CommandsCfg.target_yaw_rate below)
 COMMAND_CURRICULUM_STEPS = 20000  # env.common_step_counter ticks both curricula below ramp over
 # (~625 iterations at num_steps_per_env=32, see agents/rsl_rl_ppo_cfg.py) -- resets to 0 every
 # training process, including a resumed run, see mdp/curriculums.py:linear_range_curriculum
@@ -95,18 +109,36 @@ class ActionsCfg:
 class CommandsCfg:
     """Command terms for the MDP."""
 
-    # Target linear velocity (m/s) along body X, resampled every resampling_time_range seconds. The
-    # robot must learn to hold a constant forward/backward speed rather than travel to and hold a
-    # fixed position (see UniformVelocityCommand in mdp/commands.py).
-    # Both ranges and resampling_time_range below are the CURRICULUM START values -- CurriculumsCfg
-    # widens ranges to VELOCITY_RANGE_MAX and narrows resampling_time_range to RESAMPLING_TIME_MIN
-    # over training (see mdp/curriculums.py:linear_range_curriculum). PLAY overrides both straight to
-    # their end values (no curriculum during evaluation).
+    # Target linear velocity (m/s) along body X, resampled after a random 3-5 s interval. The robot
+    # must learn to hold a constant forward/backward speed rather than travel to and hold a fixed
+    # position (see UniformVelocityCommand in mdp/commands.py). No curriculum: the full range and
+    # resampling interval apply from the start of training.
     target_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        ranges=(0.0, 0.0),
-        resampling_time_range=(20.0, 20.0),
+        # yaw_rate_command_name="target_yaw_rate",  # arrows lean toward the commanded turn (yaw-rate command only)
+        ranges=VELOCITY_RANGE_MAX,
+        resampling_time_range=VELOCITY_RESAMPLING_TIME,
+        rel_standing_envs=0.15,  # ~15% of envs get vx = 0 and hold their yaw each interval, to learn to stand still
         debug_vis=True,
+    )
+    # Disabled: replaced by target_yaw (a heading target instead of a turn rate).
+    # Target yaw rate (rad/s) about body Z, + = turn left -- with target_velocity this forms the (vx, wz)
+    # command of a differential-drive robot. Resampled after a random 3-5 s interval, no curriculum.
+    # target_yaw_rate = mdp.UniformYawRateCommandCfg(
+    #     asset_name="robot",
+    #     ranges=YAW_RATE_RANGE_MAX,
+    #     resampling_time_range=YAW_RATE_RESAMPLING_TIME,
+    #     standing_command_name="target_velocity",  # wz = 0 too for target_velocity's standing envs
+    # )
+    # Target yaw (rad) relative to the heading the robot spawned with (= 0), + = left, in [-pi, pi].
+    # Resampled after a random 5-7 s interval; standing envs of target_velocity hold their current yaw.
+    target_yaw = mdp.UniformYawCommandCfg(
+        asset_name="robot",
+        ranges=YAW_RANGE_MAX,
+        resampling_time_range=YAW_RESAMPLING_TIME,
+        max_step=YAW_MAX_STEP,  # small turns from the previous target instead of jumps of up to 180 deg
+        standing_command_name="target_velocity",
+        debug_vis=True,  # orange arrow = target heading
     )
 
 
@@ -123,6 +155,15 @@ class ObservationsCfg:
         # bit (0.01->0.02 rad, 0.02->0.04 rad/s) from the original values.
         pitch_angle = ObsTerm(func=mdp.imu_pitch_angle, noise=Gnoise(mean=0.0, std=0.02))
         pitch_rate = ObsTerm(func=mdp.imu_pitch_rate, noise=Gnoise(mean=0.0, std=0.04))
+        # Measured yaw rate (gyro Z, rad/s, + = turning left) -- a direct reading to track
+        # target_yaw_rate against, instead of inferring it from the wheel speed difference (which
+        # wheel slip corrupts). Same noise as pitch_rate since both come from the same gyro.
+        # Yaw angle (rad) relative to the spawn heading (= 0), wrapped to [-pi, pi], + = rotated left. On
+        # the real robot: gyro Z integrated from 0 at start-up.
+        yaw_angle = ObsTerm(
+            func=mdp.relative_yaw, params={"command_name": "target_yaw"}, noise=Gnoise(mean=0.0, std=0.02)
+        )
+        yaw_rate = ObsTerm(func=mdp.imu_yaw_rate, noise=Gnoise(mean=0.0, std=0.04))
         # Distance traveled (m) per wheel since episode reset, from the wheel encoder angle -- kept
         # per-wheel (not averaged) so the policy can see both encoders independently.
         # wheel1_distance = ObsTerm(
@@ -163,6 +204,10 @@ class ObservationsCfg:
         last_action2 = ObsTerm(func=mdp.last_action_index, params={"index": 1})
         # Target linear velocity (m/s) the policy needs to track.
         velocity_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_velocity"})
+        # Target yaw rate (rad/s) about body Z, + = turn left. Disabled with target_yaw_rate.
+        # yaw_rate_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_yaw_rate"})
+        # Target yaw (rad) relative to the spawn heading, + = left, in [-pi, pi].
+        yaw_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_yaw"})
 
         def __post_init__(self) -> None:
             self.enable_corruption = True
@@ -196,7 +241,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "com_range": {"x": (-0.001, 0.001), "y": (-0.0001, 0.0001), "z": (-0.001, 0.001)},
+            "com_range": {"x": (-0.005, 0.005), "y": (-0.0001, 0.0001), "z": (-0.005, 0.005)},
         },
     )
 
@@ -232,6 +277,9 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
             "friction_range": (0.010, 0.014),
+            # each wheel x its own factor in [0.75, 1.25]: left/right motor mismatch like the real
+            # robot, so the policy learns to hold yaw_rate = 0 against it instead of spinning
+            "asymmetry": 0.1,
         },
     )
 
@@ -272,10 +320,10 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_external_force_local_x,
         mode="interval",
-        interval_range_s=(3.0, 5.0),
+        interval_range_s=(4.0, 6.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (-50.0, 50.0),
+            "force_range": (-0.0, 0.0),
             "body_offset_z": 0.10,
         },
     )
@@ -288,9 +336,9 @@ class RewardsCfg:
     All terms use an ~O(1) per-step scale (see norm_scale) so weights stay comparable to each other
     and to "upright" -- no curriculum, weights are fixed from the start.
 
-    Two goals: stay upright (upright/upright_bonus + pitch_rate, plus yaw_rate to suppress spinning
-    now that the two wheels are driven independently), and track target_velocity (velocity_tracking,
-    ground-truth body velocity). Plus action_rate for smoothness.
+    Two goals: stay upright (upright/upright_bonus + pitch_rate), and track the (vx, wz) command --
+    target_velocity (velocity_tracking) and target_yaw_rate (yaw_rate_tracking, which also stops the
+    independently driven wheels from spinning the robot in place). Plus action_rate for smoothness.
     """
 
     # -- Baseline --
@@ -300,12 +348,12 @@ class RewardsCfg:
     # -- Stay upright --
     upright = RewTerm(
         func=mdp.base_upright_penalty,
-        weight=-50.0,
+        weight=-1000.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     upright_bonus = RewTerm(
         func=mdp.base_upright_reward,
-        weight=1.0,
+        weight=0.5,
         params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.1},
     )
     pitch_rate = RewTerm(
@@ -320,11 +368,55 @@ class RewardsCfg:
         weight=-0.00005,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
     )
-    # With independent per-wheel torque, the robot has an actual mechanism to spin in place, and
-    # nothing else stops it from doing so (observed in practice) -- this penalizes yaw rate directly.
+    # -- Track target yaw rate -- (disabled: replaced by the yaw tracking terms below)
+    # Replaces the old yaw_rate (ang_vel_z_l2) penalty, which punished ANY rotation and so would fight
+    # a turn command. With target_yaw_rate = 0 this still penalizes spinning in place, so the original
+    # anti-spin purpose is kept.
+    # yaw_rate_tracking = RewTerm(
+    #     func=mdp.yaw_rate_command_error_l2,
+    #     weight=-4.0,#0.2
+    #     params={
+    #         "command_name": "target_yaw_rate",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         # Kept loose on purpose: this penalty is squared and UNBOUNDED, so a small norm_scale blows up
+    #         # after pushes/falls (0.1 gave ~-20/step and training didn't converge). It only provides a
+    #         # gentle pull when far off; close tracking is rewarded by the bounded bonus below.
+    #         "norm_scale": 0.5,
+    #     },
+    # )
+    # yaw_rate_tracking_bonus = RewTerm(
+    #     func=mdp.yaw_rate_command_tracking_bonus,
+    #     weight=2.0,#2.0
+    #     params={
+    #         "command_name": "target_yaw_rate",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         # 0.25 was too loose (ignoring the command still earned ~90% of the bonus); 0.05 was so narrow
+    #         # the policy chattered the wheels to stay inside it
+    #         "std": 0.1,
+    #     },
+    # )
+
+    # -- Track target yaw --
+    # Error = shortest signed angle between the target yaw and the current yaw (wrapped to [-pi, pi]).
+    # With a fixed target this also stops the robot from spinning in place.
+    yaw_tracking = RewTerm(
+        func=mdp.yaw_command_error_l2,
+        weight=-0.5,
+        # squared and UNBOUNDED like velocity_tracking: max ~ (pi / 1.0)^2 * 0.5 ~ 5/step for a 180 deg error
+        params={"command_name": "target_yaw", "norm_scale": 1.0},
+    )
+    yaw_tracking_bonus = RewTerm(
+        func=mdp.yaw_command_tracking_bonus,
+        weight=2.0,
+        # std 0.2 rad (~11 deg): full bonus only when pointing close to the target heading
+        params={"command_name": "target_yaw", "std": 0.2},
+    )
+    # Penalize yaw rate (gyro Z, rad/s) squared: limits how fast the robot spins toward a new
+    # target_yaw (no rate cap otherwise) and damps overshoot/oscillation around it. Turning at
+    # 1 rad/s costs 0.1/step -- far below the yaw tracking terms, so it slows turns without stopping them.
     yaw_rate = RewTerm(
         func=mdp.ang_vel_z_l2,
-        weight=-0.10,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
@@ -335,37 +427,42 @@ class RewardsCfg:
     # wheels spinning against each other shows up as yaw (ang_vel_z), already penalized above.
     velocity_tracking = RewTerm(
         func=mdp.velocity_command_error_l2,
-        weight=-2.0,
+        weight=-5.0, #5
         params={
             "command_name": "target_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
-            "norm_scale": 0.20,
+            # Kept loose on purpose: squared and UNBOUNDED, so a small norm_scale blows up after
+            # pushes/falls (0.05 gave hundreds negative per step and training didn't converge). It only
+            # provides a gentle pull when far off; close tracking is rewarded by the bounded bonus below.
+            "norm_scale": 0.2,
         },
     )
     # Bounded exponential bonus (like upright_bonus) for tracking target_velocity closely --
     # complements velocity_tracking's unbounded penalty with a clear positive signal.
     velocity_tracking_bonus = RewTerm(
         func=mdp.velocity_command_tracking_bonus,
-        weight=2.5,
+        weight=7.5, #5
         params={
             "command_name": "target_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
-            "std": 0.1,
+            # 0.1 was too loose (ignoring a ±0.05 m/s command still earned ~78% of the bonus); 0.025 was
+            # so narrow the policy chattered the wheels to stay inside it (natural balancing sway is a few cm/s)
+            "std": 0.05,
         },
     )
     # lin_vel_x_normalized_l2 would penalize velocity magnitude directly -- that's the right shape
     # for a "hold position" task, but directly contradicts a nonzero velocity_tracking target, so it
     # stays out of this reward set.
 
-    # Penalizes the two wheels' instantaneous angular velocity differing (unlike wheel_speed, which
-    # penalizes magnitude regardless of whether the two wheels match) -- catches wheel-speed mismatch
-    # the moment it starts, complementing wheel_pos_diff_l2 (accumulated, see below) which only
-    # catches it once the position gap is large enough.
-    wheel_vel_diff = RewTerm(
-        func=mdp.wheel_vel_diff_l2,
-        weight=-0.05,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
-    )
+    # Disabled: turning REQUIRES the two wheels to spin at different speeds (~7.4 rad/s difference per
+    # 1 rad/s of yaw with this track width/wheel radius), so penalizing the difference would fight
+    # target_yaw_rate. Unwanted wheel mismatch while driving straight now shows up as yaw-rate error
+    # and is penalized by yaw_rate_tracking instead.
+    # wheel_vel_diff = RewTerm(
+    #     func=mdp.wheel_vel_diff_l2,
+    #     weight=-0.05,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
+    # )
     # wheel_pos_diff = RewTerm(
     #     func=mdp.wheel_pos_diff_l2,
     #     weight=-0.01,
@@ -373,8 +470,10 @@ class RewardsCfg:
     # )
 
     # Smooth actions: suppresses high-frequency wheel jitter (observed during play -- causes violent
-    # pitch oscillation and feeds back into IMU noise).
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.0002)
+    # pitch oscillation and feeds back into IMU noise). At -0.0002 even full bang-bang (+-1 flips every
+    # step, sum(da^2) = 8) cost only ~0.0016/step vs up to ~4.5/step of tracking bonus, and with
+    # clip_actions the policy settled into near bang-bang control. -0.05 makes that ~0.4/step.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
 
 
 @configclass
@@ -416,31 +515,78 @@ class CurriculumsCfg:
     # COMMAND_CURRICULUM_STEPS environment steps -- lets the policy learn to balance in place before
     # it has to learn the lean-forward-to-accelerate coupling needed to track a nonzero body velocity
     # target, instead of facing the full range from step 0. See mdp/curriculums.py.
-    velocity_range = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "commands.target_velocity.ranges",
-            "modify_fn": mdp.linear_range_curriculum,
-            "modify_params": {
-                "start_range": (0.0, 0.0),
-                "end_range": VELOCITY_RANGE_MAX,
-                "num_steps": COMMAND_CURRICULUM_STEPS,
-            },
-        },
-    )
+    # Disabled: target_velocity now keeps CommandsCfg.target_velocity.ranges for the whole run.
+    # velocity_range = CurrTerm(
+    #     func=mdp.modify_term_cfg,
+    #     params={
+    #         "address": "commands.target_velocity.ranges",
+    #         "modify_fn": mdp.linear_range_curriculum,
+    #         "modify_params": {
+    #             "start_range": (0.0, 0.0),
+    #             "end_range": VELOCITY_RANGE_MAX,
+    #             "num_steps": COMMAND_CURRICULUM_STEPS,
+    #         },
+    #     },
+    # )
     # Narrow target_velocity's resampling interval from every 20s to every RESAMPLING_TIME_MIN (5s)
     # over the same COMMAND_CURRICULUM_STEPS -- once the policy can track a wide range of speeds, it
     # also has to react to the target changing every few seconds instead of staying fixed for most of
     # an episode. Same schedule/step count as velocity_range so both curricula finish together.
-    resampling_time = CurrTerm(
+    # Disabled: target_velocity now uses a fixed VELOCITY_RESAMPLING_TIME (3-5 s) from the start.
+    # resampling_time = CurrTerm(
+    #     func=mdp.modify_term_cfg,
+    #     params={
+    #         "address": "commands.target_velocity.resampling_time_range",
+    #         "modify_fn": mdp.linear_range_curriculum,
+    #         "modify_params": {
+    #             "start_range": (20.0, 20.0),
+    #             "end_range": RESAMPLING_TIME_MIN,
+    #             "num_steps": COMMAND_CURRICULUM_STEPS,
+    #         },
+    #     },
+    # )
+    # Turning is staged AFTER balancing + forward velocity: target_yaw_rate stays at 0 (so
+    # yaw_rate_tracking acts as a plain anti-spin penalty) until the velocity curriculum has fully
+    # opened AND the fall rate / velocity error are low, then it switches to YAW_RATE_RANGE_MAX for the
+    # rest of the run. Progress is logged to TensorBoard under Curriculum/yaw_rate_range/*.
+    # Disabled (both yaw terms): target_yaw_rate now uses YAW_RATE_RANGE_MAX and a fixed 3-5 s
+    # resampling interval from the start.
+    # yaw_rate_range = CurrTerm(
+    #     func=mdp.enable_command_when_proficient,
+    #     params={
+    #         "command_name": "target_yaw_rate",
+    #         "velocity_command_name": "target_velocity",
+    #         "enabled_range": YAW_RATE_RANGE_MAX,
+    #         "min_steps": COMMAND_CURRICULUM_STEPS,
+    #         "max_fall_rate": YAW_GATE_MAX_FALL_RATE,
+    #         "max_velocity_error": YAW_GATE_MAX_VELOCITY_ERROR,
+    #     },
+    # )
+    # yaw_rate_resampling_time = CurrTerm(
+    #     func=mdp.modify_term_cfg,
+    #     params={
+    #         "address": "commands.target_yaw_rate.resampling_time_range",
+    #         "modify_fn": mdp.linear_range_curriculum,
+    #         "modify_params": {
+    #             "start_range": (20.0, 20.0),
+    #             "end_range": RESAMPLING_TIME_MIN,
+    #             "num_steps": COMMAND_CURRICULUM_STEPS,
+    #         },
+    #     },
+    # )
+
+    # target_yaw stays at 0 (= spawn heading, i.e. "don't turn") for the first YAW_CURRICULUM_ITERATIONS
+    # PPO iterations, so the policy learns to balance + track velocity first, then switches to
+    # YAW_RANGE_MAX (each new target within +-YAW_MAX_STEP of the previous one, see CommandsCfg).
+    yaw_range = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
-            "address": "commands.target_velocity.resampling_time_range",
-            "modify_fn": mdp.linear_range_curriculum,
+            "address": "commands.target_yaw.ranges",
+            "modify_fn": mdp.step_value_curriculum,
             "modify_params": {
-                "start_range": (20.0, 20.0),
-                "end_range": RESAMPLING_TIME_MIN,
-                "num_steps": COMMAND_CURRICULUM_STEPS,
+                "start_value": (0.0, 0.0),
+                "end_value": YAW_RANGE_MAX,
+                "num_steps": YAW_CURRICULUM_STEPS,
             },
         },
     )
@@ -470,7 +616,7 @@ class SelfBalancingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 2
-        self.episode_length_s = 200.0
+        self.episode_length_s = 20.0
         # viewer settings
         self.viewer.eye = (0.8, 0.8, 0.5)
         # simulation settings
@@ -490,12 +636,17 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         # disable observation noise during play
         self.observations.policy.enable_corruption = False
         # Evaluate at the full trained range/fastest resampling directly -- a fresh env's
-        # common_step_counter starts at 0, so without this both curricula would start narrow again.
-        self.curriculum.velocity_range = None
-        self.curriculum.resampling_time = None
+        # common_step_counter starts at 0, so without this the curricula would start narrow again.
+        # self.curriculum.velocity_range = None  # velocity_range curriculum is disabled
+        # self.curriculum.resampling_time = None  # resampling_time curriculum is disabled
+        # self.curriculum.yaw_rate_range = None  # yaw curricula are disabled
+        # self.curriculum.yaw_rate_resampling_time = None
         self.commands.target_velocity.ranges = VELOCITY_RANGE_MAX
-        self.commands.target_velocity.resampling_time_range = RESAMPLING_TIME_MIN
+        self.commands.target_velocity.resampling_time_range = VELOCITY_RESAMPLING_TIME
+        # self.commands.target_yaw_rate.ranges = YAW_RATE_RANGE_MAX
+        # self.commands.target_yaw_rate.resampling_time_range = YAW_RATE_RESAMPLING_TIME
+        self.curriculum.yaw_range = None  # play evaluates the full yaw range right away
+        self.commands.target_yaw.ranges = YAW_RANGE_MAX
+        self.commands.target_yaw.resampling_time_range = YAW_RESAMPLING_TIME
         # keep push_robot active during play to see how the policy handles disturbances
-        # Shortened for play: the training config's episode_length_s=200.0 is too long to watch a
-        # respawn happen (time_out still works either way -- it's just a long wait at 200s).
         self.episode_length_s = 20.0

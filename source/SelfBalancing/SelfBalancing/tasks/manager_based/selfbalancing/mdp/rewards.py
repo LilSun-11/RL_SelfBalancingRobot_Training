@@ -168,6 +168,47 @@ def velocity_command_tracking_bonus(
     return torch.exp(-torch.square(command - actual_vel) / std**2)
 
 
+def yaw_rate_command_error_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    norm_scale: float = 0.5,
+) -> torch.Tensor:
+    """Penalize squared error (normalized by ``norm_scale``, rad/s) between the target yaw rate (see
+    UniformYawRateCommand) and the body's true yaw rate (root_ang_vel_b[:, 2]). With a zero command
+    this is a plain anti-spin penalty, so it replaces ang_vel_z_l2 rather than adding to it."""
+    command = env.command_manager.get_command(command_name)[:, 0]
+    asset: Articulation = env.scene[asset_cfg.name]
+    actual = asset.data.root_ang_vel_b[:, 2]
+    return torch.square((command - actual) / norm_scale)
+
+
+def yaw_rate_command_tracking_bonus(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    std: float = 0.25,
+) -> torch.Tensor:
+    """Exponential bonus (complementing yaw_rate_command_error_l2) for the body's true yaw rate being
+    close to the target."""
+    command = env.command_manager.get_command(command_name)[:, 0]
+    asset: Articulation = env.scene[asset_cfg.name]
+    actual = asset.data.root_ang_vel_b[:, 2]
+    return torch.exp(-torch.square(command - actual) / std**2)
+
+
+def yaw_command_error_l2(env: ManagerBasedRLEnv, command_name: str, norm_scale: float = 1.0) -> torch.Tensor:
+    """Penalize the squared yaw error (normalized by ``norm_scale``, rad) between the target yaw and the
+    current yaw, both relative to the spawn heading (see UniformYawCommand). The error is the shortest
+    signed angle (wrapped to [-pi, pi]), so 179 deg vs -179 deg counts as 2 deg, not 358 deg."""
+    return torch.square(env.command_manager.get_term(command_name).yaw_error / norm_scale)
+
+
+def yaw_command_tracking_bonus(env: ManagerBasedRLEnv, command_name: str, std: float = 0.2) -> torch.Tensor:
+    """Exponential bonus (complementing yaw_command_error_l2) for the yaw being close to the target."""
+    return torch.exp(-torch.square(env.command_manager.get_term(command_name).yaw_error) / std**2)
+
+
 def wheel_vel_diff_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize the two wheels spinning at different speeds/directions (squared velocity
     difference). asset_cfg.joint_ids must point at exactly the 2 wheel joints."""
