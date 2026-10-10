@@ -5,6 +5,9 @@
 This project trains a two-wheeled self-balancing robot (a "TWIP" — two-wheeled inverted pendulum)
 with reinforcement learning in Isaac Lab, then deploys the trained policy to real hardware.
 
+📖 **Step-by-step tutorial (URDF → Isaac Lab → training → sim-to-real):**
+<https://lilsun-11.github.io/RL_SelfBalancingRobot_Training/> — Physical AI Lab (PAI Lab), University of Ulsan.
+
 The end-to-end workflow is:
 
 ![End-to-end workflow: physical robot -> URDF model -> Isaac Sim -> training in Isaac Lab (PPO) -> policy evaluation -> export .onnx to a C header -> deploy to the robot](docs/media/workflow.png)

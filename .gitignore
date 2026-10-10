@@ -73,3 +73,6 @@ tests/
 
 # PlatformIO firmware builds
 **/.pio/
+
+# MkDocs build output
+/site/

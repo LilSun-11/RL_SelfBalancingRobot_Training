@@ -1,0 +1,85 @@
+site_name: Self-Balancing Robot with Isaac Lab
+site_description: >-
+  Build, train and deploy a reinforcement-learning balancing policy for a two-wheeled robot,
+  from URDF to Isaac Lab to an ESP32 — a Physical AI Lab (PAI Lab) tutorial.
+site_author: Physical AI Lab (PAI Lab), University of Ulsan
+site_url: https://lilsun-11.github.io/RL_SelfBalancingRobot_Training/
+repo_url: https://github.com/LilSun-11/RL_SelfBalancingRobot_Training
+repo_name: LilSun-11/RL_SelfBalancingRobot_Training
+edit_uri: edit/master/docs/
+copyright: Copyright &copy; Physical AI Lab (PAI Lab), University of Ulsan
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    logo: material/robot-outline
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.footer
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+nav:
+  - Home: index.md
+  - 1. Set Up Your Machine: 01-setup.md
+  - 2. Build the Robot URDF: 02-urdf.md
+  - 3. Import the Robot into Isaac Lab: 03-import.md
+  - 4. Create the RL Task: 04-task.md
+  - 5. Train the Policy: 05-train.md
+  - 6. Evaluate and Export: 06-evaluate.md
+  - 7. Sim-to-Real Deployment: 07-sim-to-real.md
+  - 8. Troubleshooting: 08-troubleshooting.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_javascript:
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/LilSun-11/RL_SelfBalancingRobot_Training
