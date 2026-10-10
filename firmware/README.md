@@ -29,7 +29,8 @@ and motor shaper in Isaac Sim, which is useful for checking whether the simulato
 | Right encoder A / B (policy firmware only) | GPIO 33 / 32 |
 | Status LED | GPIO 27 |
 
-LED: green = running, dim red = motors disabled, bright red = tilted past 45° (motors cut).
+LED: green = running, dim red = motors disabled, bright red = tilted past the safety limit (motors
+cut): 60° for `policy_controller`, 45° for `pid_controller`.
 
 ## Build and flash
 
@@ -61,16 +62,26 @@ prints `# CALIB offset=...`.
    any mismatch. The converter only accepts a straight-chain MLP (Linear + ELU/ReLU/Tanh/Sigmoid).
 3. Rebuild and flash `policy_controller`.
 
-The firmware refuses to compile unless the header has `POLICY_OBS_DIM == 7` and
+The firmware refuses to compile unless the header has `POLICY_OBS_DIM == 10` and
 `POLICY_ACT_DIM == 2`, matching the observation layout built in `assembleObs()`:
 
 ```text
-[pitch_angle, pitch_rate, wheel1_vel, wheel2_vel, last_action1, last_action2, velocity_command]
+[pitch_angle, pitch_rate, yaw_angle, yaw_rate, wheel1_vel, wheel2_vel,
+ last_action1, last_action2, velocity_command, yaw_command]
 ```
 
 This must stay in sync with `ObservationsCfg.PolicyCfg` in `selfbalancing_env_cfg.py` (order, units
-and sign convention — see [Policy input/output](../README.md#policy-inputoutput)). In particular,
-the sim's `pitch_rate` is the negative of d(pitch)/dt, so the firmware feeds `-rateDps`.
+and sign convention — see [Policy input/output](../README.md#policy-inputoutput)). In particular:
+
+- the sim's `pitch_rate` is the negative of d(pitch)/dt, so the firmware feeds `-rateDps`;
+- `yaw_rate` is the gyro Z rate (rad/s, + = turning left), bias-corrected at calibration and
+  low-pass filtered at `YAW_LPF_HZ` (20 Hz, `f` command);
+- `yaw_angle` is the unfiltered gyro Z rate integrated since the last calibration or `h` command,
+  wrapped to [-π, π] — the real-robot equivalent of the sim's spawn heading = yaw 0. There is no
+  magnetometer, so it slowly drifts;
+- `yaw_command` is a target heading in that same frame (`y<deg>`). In the sim, a robot told to stand
+  still (`v = 0`) holds the heading it has at that moment, so to stand still on the real robot set
+  `y` to the current `yawAng`.
 
 ## Motor output shaping
 
@@ -101,6 +112,12 @@ Send one command per line, e.g. `p0.4` or `m-1`. `?` prints the current paramete
 | `s<deg>` | Pitch trim (deg) |
 | `e<±1>` / `r<±1>` | Left / right encoder count direction |
 | `w<0/1>` | Swap the two policy outputs between the wheels |
+| `v<m/s>` | Velocity command, + = forward, clamped to ±`VEL_CMD_MAX` (0.1 m/s) |
+| `y<deg>` | Heading (yaw) command relative to yaw 0, + = left (e.g. `y30`) |
+| `h` | Make the current heading yaw 0 and clear the heading command |
+| `z<±1>` | Gyro Z sign (turning the robot left by hand must give a positive `yaw`) |
+| `f<Hz>` | Yaw-rate low-pass cutoff (0 = off) |
+| `j` | Wheel mapping test (wheels off the ground): drives `act[0]` then `act[1]` alone and checks with the encoders that only the left, then only the right wheel turns forward |
 
 | Command | `pid_controller` only |
 |---|---|
@@ -117,5 +134,8 @@ Defaults of the PID firmware: `Kp = 0.4` duty/deg, `Ki = 1.0` duty/(deg·s) with
    not, swap the motor wires on one side or use `m-1`.
 2. Tilt the robot by hand and watch the telemetry: pitch and rate must move in the same direction
    (`g`, `i` to fix), and each encoder velocity must be positive when its wheel rolls forward (`e`,
-   `r` to fix).
-3. Only then put it on the floor, holding it lightly for the first seconds.
+   `r` to fix). Turn the robot left (counter-clockwise seen from above): `yaw` (rate) must be
+   positive and `yawAng` must increase (`z-1` to fix).
+3. Run `j` with the wheels off the ground: it must report `OK` for both actions (`w1`/`w0` swaps the
+   wheels, `e`/`r` the encoder directions).
+4. Only then put it on the floor, holding it lightly for the first seconds.

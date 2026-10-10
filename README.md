@@ -13,7 +13,8 @@ The end-to-end workflow is:
   (box/cylinder primitives with per-part masses and analytic inertias), imported directly into Isaac
   Sim at simulation start (no prebaked USD), so the simulated robot never drifts out of sync with it.
 - Training uses Isaac Lab's manager-based RL environment (`source/SelfBalancing/`) with RSL-RL/PPO:
-  the robot balances upright while tracking a randomly commanded forward/backward body velocity.
+  the robot balances upright while tracking a randomly commanded forward/backward body velocity and
+  heading (yaw).
 - `scripts/rsl_rl/play.py` evaluates a trained checkpoint and automatically exports it to both
   `policy.pt` (JIT) and `policy.onnx` under `logs/rsl_rl/<experiment>/<run>/exported/`.
 - `tools/export_policy_header.py` converts that `.onnx` file into a C header, which the ESP32
@@ -31,11 +32,12 @@ The end-to-end workflow is:
 ### Policy input/output
 
 The policy is a small MLP (`actor_hidden_dims=[32, 32]` in `agents/rsl_rl_ppo_cfg.py`, no
-observation normalization) that maps 7 observations straight to 2 wheel torques:
+observation normalization) that maps 10 observations straight to 2 wheel torques:
 
 ```text
-[pitch angle, pitch rate, wheel_L velocity, wheel_R velocity, last action_L, last action_R,
- target velocity] -> MLP 7 -> 32 -> 32 -> 2 -> [wheel_L torque, wheel_R torque]
+[pitch angle, pitch rate, yaw angle, yaw rate, wheel_L velocity, wheel_R velocity,
+ last action_L, last action_R, target velocity, target yaw]
+ -> MLP 10 -> 32 -> 32 -> 2 -> [wheel_L torque, wheel_R torque]
 ```
 
 Observations are concatenated in exactly this order (`ObservationsCfg.PolicyCfg` in
@@ -46,33 +48,40 @@ without it.
 |---|---|---|---|---|
 | 1 | pitch angle | `mdp.imu_pitch_angle` | rad | 0.02 |
 | 2 | pitch rate | `mdp.imu_pitch_rate` | rad/s | 0.04 |
-| 3 | wheel_L angular velocity | `mdp.joint_vel` (`wheel1_motor1_joint`) | rad/s | 0.05 |
-| 4 | wheel_R angular velocity | `mdp.joint_vel` (`wheel2_motor2_joint`) | rad/s | 0.05 |
-| 5 | previous action, wheel_L | `mdp.last_action_index` (`index=0`) | raw, `[-1, 1]` | — |
-| 6 | previous action, wheel_R | `mdp.last_action_index` (`index=1`) | raw, `[-1, 1]` | — |
-| 7 | target body velocity | `mdp.generated_commands` (`target_velocity`) | m/s | — |
+| 3 | yaw angle, relative to the spawn heading | `mdp.relative_yaw` | rad, `[-π, π]` | 0.02 |
+| 4 | yaw rate | `mdp.imu_yaw_rate` | rad/s | 0.04 |
+| 5 | wheel_L angular velocity | `mdp.joint_vel` (`wheel1_motor1_joint`) | rad/s | 0.05 |
+| 6 | wheel_R angular velocity | `mdp.joint_vel` (`wheel2_motor2_joint`) | rad/s | 0.05 |
+| 7 | previous action, wheel_L | `mdp.last_action_index` (`index=0`) | `[-1, 1]` | — |
+| 8 | previous action, wheel_R | `mdp.last_action_index` (`index=1`) | `[-1, 1]` | — |
+| 9 | target body velocity | `mdp.generated_commands` (`target_velocity`) | m/s | — |
+| 10 | target yaw, relative to the spawn heading | `mdp.generated_commands` (`target_yaw`) | rad, `[-π, π]` | — |
 
-- **Previous action (5–6):** the wheel actuator delays each command by 2–8 physics steps (10–40 ms,
+- **Yaw (3–4):** the heading the robot spawns with is yaw 0, so the yaw angle and the target yaw are
+  both relative to it — on the real robot this is the gyro Z rate integrated from 0.
+- **Previous action (7–8):** the wheel actuator delays each command by 2–8 physics steps (10–40 ms,
   `DelayedPDActuatorCfg` in `robot.py`) to model the motor driver's reversal lag, so the torque
   applied now is a command from a few steps ago. Seeing its own last command lets the policy account
-  for that. These are the *raw* policy outputs from the previous control step, before any scaling.
-- **Target velocity (7):** a curriculum widens its range from 0 to ±0.5 m/s and shortens how often it
-  changes from every 20 s to every 5 s over the first 20000 env steps (~625 iterations). Play uses
-  the final values directly.
-- **Sign convention:** positive wheel velocity/torque drives the robot forward (+X). Tilting toward
-  +X gives a *negative* pitch angle. The pitch rate is `root_ang_vel_b[:, 1]`, which is the
-  **negative** of d(pitch angle)/dt (measured with `scripts/pid_balance.py`). Firmware that computes
-  the rate as +d(pitch)/dt must flip its sign before feeding it to the policy.
+  for that. Actions are clipped to `[-1, 1]` (`clip_actions = 1.0`) before they reach the env.
+- **Target velocity (9):** sampled in ±0.15 m/s and changed every 5–7 s. About 15 % of the envs get
+  a zero command instead (and hold their heading), so the policy also learns to stand still.
+- **Target yaw (10):** held at 0 for the first 2000 iterations (curriculum), then every 5–7 s each new
+  target is within ±60° of the previous one, wrapped to [-π, π]. Play uses the full range directly.
+- **Sign convention:** positive wheel velocity/torque drives the robot forward (+X); positive yaw
+  (rate) = turning left, counter-clockwise seen from above. Tilting toward +X gives a *negative*
+  pitch angle. The pitch rate is `root_ang_vel_b[:, 1]`, which is the **negative** of d(pitch
+  angle)/dt (measured with `scripts/pid_balance.py`). Firmware that computes the rate as
+  +d(pitch)/dt must flip its sign before feeding it to the policy.
 
 | # | Action (output) | Range | Unit |
 |---|---|---|---|
-| 1 | wheel_L torque command | raw `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
-| 2 | wheel_R torque command | raw `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
+| 1 | wheel_L torque command | `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
+| 2 | wheel_R torque command | `[-1, 1]` scaled by `MOTOR_TORQUE_MAX` | Nm, `[-0.49, 0.49]` |
 
 The exported `policy.onnx`/`policy.pt` (see [Evaluate a trained policy and export
-it](#evaluate-a-trained-policy-and-export-it)) keeps this exact 7-in/2-out contract — the ESP32
+it](#evaluate-a-trained-policy-and-export-it)) keeps this exact 10-in/2-out contract — the ESP32
 firmware needs to feed it observations in this order, units and sign convention, and apply the same
-`[-1, 1] -> torque` scaling to its raw output.
+`[-1, 1] -> torque` scaling to its output.
 
 **Keywords:** self-balancing robot, TWIP, reinforcement learning, Isaac Lab, RSL-RL, PPO, sim-to-real, ESP32
 
@@ -266,8 +275,9 @@ An example UI extension loads upon enabling your extension, defined in
 Two task variants are registered: `Template-SelfBalancing-v0` (training, 8196 parallel envs) and
 `Template-SelfBalancing-Play-v0` (playback/evaluation, 360 envs, no observation noise — see
 `SelfBalancingEnvCfg_PLAY` in `selfbalancing_env_cfg.py`). The robot's task is to stay upright while
-tracking a randomly commanded forward/backward body velocity (curriculum up to -0.5 to 0.5 m/s, see
-[Policy input/output](#policy-inputoutput)).
+tracking a randomly commanded forward/backward body velocity and heading (see
+[Policy input/output](#policy-inputoutput)). In play, the green arrow is the target velocity, the
+blue arrow the actual velocity and the orange arrow the target heading.
 
 ### Train
 
@@ -473,7 +483,7 @@ Replace `<run_dir_name>` with the run you exported in [§5](#evaluate-a-trained-
 - Activations `Elu`, `Relu`, `Tanh`, `Sigmoid` (`Clip(min=0)` is treated as `Relu`)
 - Optional input normalization `(x − mean) / std`
 
-> ⚠️ The firmware refuses to compile unless the header has `POLICY_OBS_DIM == 7` and
+> ⚠️ The firmware refuses to compile unless the header has `POLICY_OBS_DIM == 10` and
 > `POLICY_ACT_DIM == 2` — the observation layout built in `assembleObs()` (see §6.5). If you change
 > the observations in `selfbalancing_env_cfg.py`, update `assembleObs()` to match before flashing.
 
@@ -520,9 +530,9 @@ flowchart TD
     T -- no --> L
     T -- yes --> R["updateAngle()<br/>complementary filter<br/>→ pitch, pitch rate"]
     R --> E["updateEncoders()<br/>→ wheel velocities (rad/s)"]
-    E --> SF{"|pitch| > 45°<br/>or motors off?"}
+    E --> SF{"|pitch| > 60°<br/>or motors off?"}
     SF -- yes --> STOP["Coast motors"] --> L
-    SF -- no --> O["assembleObs()<br/>7 observations"]
+    SF -- no --> O["assembleObs()<br/>10 observations"]
     O --> MLP["policyForward()<br/>→ 2 actions in −1…+1"]
     MLP --> D["driveWheels()<br/>shaper → PWM duty per wheel"] --> L
 ```
@@ -535,18 +545,25 @@ The observations must match the simulation exactly (see [Policy input/output](#p
 |---|---|---|---|
 | 1 | pitch angle | complementary filter, minus the pitch trim (`s` command) | rad |
 | 2 | pitch rate | `-rateDps` (gyro X, sign flipped to match the sim) | rad/s |
-| 3 | left wheel velocity | left encoder | rad/s |
-| 4 | right wheel velocity | right encoder | rad/s |
-| 5 | previous action, left | policy output of the previous step | `[-1, 1]` |
-| 6 | previous action, right | policy output of the previous step | `[-1, 1]` |
-| 7 | target velocity | `VEL_CMD_MPS` (0 = balance in place) | m/s |
+| 3 | yaw angle | gyro Z integrated since calibration / the `h` command, wrapped to [-π, π] | rad |
+| 4 | yaw rate | gyro Z, low-pass filtered at 20 Hz (`z` flips its sign, `f` sets the cutoff) | rad/s |
+| 5 | left wheel velocity | left encoder | rad/s |
+| 6 | right wheel velocity | right encoder | rad/s |
+| 7 | previous action, left | policy output of the previous step | `[-1, 1]` |
+| 8 | previous action, right | policy output of the previous step | `[-1, 1]` |
+| 9 | target velocity | `VEL_CMD_MPS`, set with `v<m/s>` (0 = balance in place, max ±0.1) | m/s |
+| 10 | target yaw | `YAW_CMD_RAD`, set with `y<deg>` (0 = keep the start heading) | rad |
+
+The yaw angle and the target yaw are reset to 0 on calibration and with the `h` command — the
+real-robot equivalent of the spawn heading at the start of a simulated episode. There is no
+magnetometer, so the integrated yaw slowly drifts.
 
 The 2 outputs (left, right) are numbers in **−1 … +1** that `driveWheels()` turns into a PWM duty
 (20 kHz, 10-bit) per motor: sign = direction, size = strength.
 
 > ⚠️ **The most common reason a sim-trained policy fails on the real robot:** the inputs do not
 > match the simulation. Check the **order**, **units** (rad, rad/s, m/s), **signs** (which direction
-> is positive) and **scaling** of all 7 inputs against Isaac Lab.
+> is positive) and **scaling** of all 10 inputs against Isaac Lab.
 
 #### 6.5.2 Estimating the tilt angle (complementary filter)
 
@@ -575,11 +592,13 @@ $$
 
 #### 6.5.4 Motor output shaping, safety and serial commands
 
-- The motors are cut (coast) when the tilt exceeds **45°**, and the loop never uses `delay()`.
+- The motors are cut (coast) when the tilt exceeds **60°** (45° in the PID firmware), and the loop
+  never uses `delay()`.
 - `driveWheels()` adds a deadband, a minimum duty to get past motor stiction and a duty cap near
   balance — see [Motor output shaping](firmware/README.md#motor-output-shaping).
 - Parameters can be changed live over the serial monitor (one command per line, `?` lists them),
-  e.g. `x` / `o` motors off / on, `t` motor test, `c` re-calibrate, `s<deg>` pitch trim — full list
+  e.g. `x` / `o` motors off / on, `t` motor test, `c` re-calibrate, `s<deg>` pitch trim, `v<m/s>`
+  velocity command, `y<deg>` heading command, `h` reset yaw to 0, `j` wheel mapping test — full list
   in [Serial commands](firmware/README.md#serial-commands).
 
 ### 6.6 Recommended testing order
@@ -589,11 +608,15 @@ boot, so send `x` first while you check the sensors.
 
 1. **IMU:** tilt the robot by hand and watch `pitch` / `rate` in the telemetry: ~0° upright, and both
    must move in the same direction (fix with `g-1` or `i-1`).
-2. **Encoders:** roll each wheel forward by hand: `velL` / `velR` must be positive (fix with `e-1` / `r-1`).
-3. **Motors:** with the **wheels off the ground**, send `t`: both wheels must spin forward, then
-   backward (swap that motor's wires or use `m-1`).
-4. **Safety:** send `o`, tilt past 45° and confirm the motors stop (LED bright red).
-5. **Full policy:** hold the robot upright, send `o`, let go gently and keep a hand ready to catch it.
+2. **Yaw:** turn the robot left by hand (counter-clockwise seen from above): `yaw` (the rate) must
+   be positive and `yawAng` must increase (fix with `z-1`).
+3. **Encoders:** roll each wheel forward by hand: `velL` / `velR` must be positive (fix with `e-1` / `r-1`).
+4. **Motors:** with the **wheels off the ground**, send `t`: both wheels must spin forward, then
+   backward (swap that motor's wires or use `m-1`). Then send `j`: it must print `OK` for both
+   actions, i.e. the policy's left/right outputs reach the left/right wheel (`w1`/`w0` to swap).
+5. **Safety:** send `o`, tilt past 60° and confirm the motors stop (LED bright red).
+6. **Full policy:** hold the robot upright, send `o`, let go gently and keep a hand ready to catch it.
+   Then try small commands, e.g. `v0.05`, `v0`, `y30`, `y0`.
 
 ### 6.7 Troubleshooting (hardware)
 
@@ -610,6 +633,7 @@ boot, so send `x` first while you check the sensors.
 | `--verify` fails | The model is not a simple MLP or uses unsupported layers; re-export from Isaac Lab |
 | A wheel spins the wrong way | Swap that motor's two wires on the L298N (or `m-1` for both) |
 | Robot falls immediately | Check input order, units and signs (§6.5.1); check the IMU axis and sign |
+| Robot spins in place | Yaw sign is wrong (`z-1`, §6.6), or the left/right wheels are swapped (check with `j`, fix with `w`) |
 | Sensor values jump when motors run | Missing common ground, loose wires, or low battery |
 | Board resets when the motors start | Brown-out: check the 5 V supply and the common ground |
 

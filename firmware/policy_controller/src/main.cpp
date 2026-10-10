@@ -2,10 +2,13 @@
 #include <Wire.h>
 #include <math.h>
 #include <ESP32Encoder.h>
+#include <esp_system.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 #include "policy_weights.h"
 
-#if POLICY_OBS_DIM != 7
-#error "Firmware lap obs 7 chieu [pitch,rate,vel1,vel2,lastAct1,lastAct2,velCmd] (khop selfbalancing_env_cfg.py). Model khac chieu -> sua assembleObs()."
+#if POLICY_OBS_DIM != 10
+#error "Firmware lap obs 10 chieu [pitch,pitchRate,yawAngle,yawRate,vel1,vel2,lastAct1,lastAct2,velCmd,yawCmd] (khop selfbalancing_env_cfg.py). Model khac chieu -> sua assembleObs()."
 #endif
 #if POLICY_ACT_DIM != 2
 #error "Firmware lap obs co 2 o last_action (1 o/banh) -> can dung dung 2 action. Model khac -> sua assembleObs()/driveWheels()/loop()."
@@ -35,29 +38,36 @@ static const uint32_t PWM_MAX_LEDC = (1u << PWM_RES) - 1u;
   #define PWM_B CH_ENB
 #endif
 
-float MIN_DUTY = 0.49f, MAX_DUTY = 1.0f, U_DEADBAND = 0.01f;
+float MIN_DUTY = 0.5f, MAX_DUTY = 1.0f, U_DEADBAND = 0.01f; //0.56
 float LINEAR_START_U     = 0.10f;
 float NEAR_BAL_MAX_DUTY  = 0.42f;
 float NEAR_BAL_PITCH_DEG = 1.5f;
 float NEAR_BAL_RATE_DPS  = 18.0f;
 float U_SCALE     = 1.0f;
 float PITCH_TRIM_DEG = 0.0f;
-float VEL_CMD_MPS = 0.0f;   // velocity_command (m/s) obs cuoi cung -- LUON = 0 vi khi train file
-                            // selfbalancing_env_cfg.py da TAT ca curriculum lan reward lien quan toi
-                            // target_velocity (xem RewardsCfg/CurriculumsCfg: velocity_tracking* va
-                            // velocity_range/resampling_time deu bi comment). Dat khac 0 la NGOAI
-                            // phan phoi da train, policy chua hoc lai theo huong nay.
+// Lenh cho policy (obs velocity_command / yaw_command). Gioi han = dai da train
+// (VELOCITY_RANGE_MAX / YAW_RANGE_MAX trong selfbalancing_env_cfg.py) -- vuot ra ngoai la ngoai
+// phan phoi policy da thay.
+const float VEL_CMD_MAX = 0.1f;    // m/s
+float VEL_CMD_MPS = 0.0f;   // velocity_command (m/s), + = tien
+// yaw_command: GOC muc tieu (rad) so voi huong luc calibrate (= huong spawn trong sim, yaw 0),
+// + = quay TRAI, [-pi, pi]. Trong sim, khi v = 0 ("dung yen") muc tieu bi dong bang tai goc hien
+// tai -> tren robot: muon dung yen thi de yawCmd = goc dang dung (lenh 'y' voi gia tri yawAng).
+float YAW_CMD_RAD = 0.0f;
+int   YAW_SIGN    = +1;     // da kiem bang tay: xoay TRAI -> yaw DUONG (khop sim, + = re trai).
+                            // Kiem: xoay robot sang TRAI bang tay -> 'yaw' phai DUONG
+float YAW_LPF_HZ  = 20.0f;  // tan so cat loc thong thap cho yaw rate (0 = tat loc)
 int   MOTOR_SIGN   = +1;
 int   GYRO_SIGN    = +1;    // dao dau rieng toc do goc (gyro) so voi goc nghieng (accel)
 int   PITCH_SIGN   = +1;    // dao dau CA goc nghieng lan toc do goc (dinh huong IMU nguoc)
 int   ENC_L_SIGN   = +1;    // dao chieu dem encoder banh A (khong anh huong chieu motor)
 int   ENC_R_SIGN   = -1;    // dao chieu dem encoder banh B
-int   WHEEL_SWAP   = 0;     // POLICY_ACT_DIM==2: doi thu tu act[0]/act[1] neu bi lap nguoc 2 banh
+int   WHEEL_SWAP   = 1;     // doi lenh 2 banh: act[0] -> banh B (IN3/IN4), act[1] -> banh A (IN1/IN2). 'w0' de tra lai
 
 
 const int CONTROL_HZ = 100;
 const unsigned long LOOP_US = 1000000UL / CONTROL_HZ;
-const float MAX_SAFE_TILT_DEG = 45.0f;
+const float MAX_SAFE_TILT_DEG = 60.0f;
 const float COMP_ALPHA = 0.98f;
 // Khop nhip 1 tick loop (10ms @ 100Hz): gia tri nho hon LOOP_US se bi "lam tron len" thanh 1 tick
 // vi motor chi duoc cap nhat 1 lan/tick, nen dat dung bang 1 tick de tranh sai lech (~2x) khong chu dinh.
@@ -71,8 +81,10 @@ uint8_t IMU_ADDR = 0x6B;
 
 // ------- state -------
 float pitchDeg=0, rateDps=0, pitchFiltered=0, pitchOffsetDeg=0, gyroBiasX=0;
+float yawRateDps=0, gyroBiasZ=0;
+float yawDeg=0;   // goc yaw (do), tich phan yaw rate, = 0 luc calibrate/'h'. + = quay TRAI. CHUA dua vao obs.
 bool  filterSeeded=false, enabled=true;
-float gAx,gAy,gAz,gGx;
+float gAx,gAy,gAz,gGx,gGz;
 float lastUL=0, lastUR=0, lastDutyFrac=0;
 unsigned long lastLoopUs=0, inferUs=0;
 
@@ -163,8 +175,10 @@ void readSensors(){
   int16_t ray=(int16_t)(((uint16_t)ab[3]<<8)|ab[2]);
   int16_t raz=(int16_t)(((uint16_t)ab[5]<<8)|ab[4]);
   int16_t rgx=(int16_t)(((uint16_t)gb[1]<<8)|gb[0]);
+  int16_t rgz=(int16_t)(((uint16_t)gb[5]<<8)|gb[4]);   // gyro Z (OUTZ_G), nam san trong 6 byte gyro da doc
   gAx=rax*ACC_SENS_G; gAy=ray*ACC_SENS_G; gAz=raz*ACC_SENS_G;
   gGx=rgx*GYRO_SENS_DPS;
+  gGz=rgz*GYRO_SENS_DPS;
 }
 
 // ====================== ANGLE / OBS ==========================================
@@ -178,30 +192,53 @@ void updateAngle(float dt){
   while(pitchDeg >  180.0f) pitchDeg -= 360.0f;
   while(pitchDeg < -180.0f) pitchDeg += 360.0f;
   rateDps  = rate;
+
+  // Yaw rate: tru bias (do luc calibrate, giong gyroBiasX cua pitch) roi loc thong thap bac 1.
+  // Khong co cam bien tham chieu cho yaw (nhu accel cho pitch) nen khong lam complementary duoc,
+  // chi khu nhieu bang LPF. Loc cang manh thi cang tre pha -- policy duoc train voi nhieu trang
+  // std 0.04 rad/s va KHONG tre, nen khong nen ha YAW_LPF_HZ qua thap.
+  float yawRaw = YAW_SIGN * (gGz - gyroBiasZ);
+  if(YAW_LPF_HZ > 0.0f){
+    float a = 1.0f - expf(-TWO_PI*YAW_LPF_HZ*dt);
+    yawRateDps += a*(yawRaw - yawRateDps);
+  } else {
+    yawRateDps = yawRaw;
+  }
+
+  // Goc yaw: tich phan yaw rate THO (da tru bias, chua loc -> khong bi tre pha cua LPF).
+  // Khong co cam bien tham chieu (la ban) nen se troi cham theo thoi gian do bias con du.
+  yawDeg += yawRaw*dt;
+  while(yawDeg >  180.0f) yawDeg -= 360.0f;
+  while(yawDeg < -180.0f) yawDeg += 360.0f;
 }
 void calibrate(){
   Serial.println("# CALIB: GIU ROBOT DUNG THANG va YEN ~2s...");
-  const int N=1000; double sA=0,sG=0;
-  for(int i=0;i<N;i++){ readSensors(); sA+=PITCH_SIGN*atan2f(gAy,gAz)*RAD_TO_DEG; sG+=gGx; delay(2); }
-  pitchOffsetDeg=(float)(sA/N); gyroBiasX=(float)(sG/N);
+  const int N=1000; double sA=0,sG=0,sGz=0;
+  for(int i=0;i<N;i++){ readSensors(); sA+=PITCH_SIGN*atan2f(gAy,gAz)*RAD_TO_DEG; sG+=gGx; sGz+=gGz; delay(2); }
+  pitchOffsetDeg=(float)(sA/N); gyroBiasX=(float)(sG/N); gyroBiasZ=(float)(sGz/N);
+  yawRateDps=0.0f; yawDeg=0.0f; YAW_CMD_RAD=0.0f;   // huong hien tai = yaw 0 (nhu spawn trong sim), giu nguyen huong
   filterSeeded=false; resetOdometry(); prevAct[0]=prevAct[1]=0.0f; lastLoopUs=micros();
-  Serial.printf("# CALIB offset=%.2f gyroBiasX=%.3f\n", pitchOffsetDeg, gyroBiasX);
+  Serial.printf("# CALIB offset=%.2f gyroBiasX=%.3f gyroBiasZ=%.3f\n", pitchOffsetDeg, gyroBiasX, gyroBiasZ);
 }
 void assembleObs(float obs[POLICY_OBS_DIM]){
-  // Obs 7 chieu, khop DUNG THU TU khai bao trong ObservationsCfg.PolicyCfg cua
+  // Obs 10 chieu, khop DUNG THU TU khai bao trong ObservationsCfg.PolicyCfg cua
   // selfbalancing_env_cfg.py (concatenate_terms=True -> noi theo thu tu khai bao):
-  //   [pitch_angle, pitch_rate, wheel1_vel, wheel2_vel, last_action1, last_action2, velocity_command]
+  //   [pitch_angle, pitch_rate, yaw_angle, yaw_rate, wheel1_vel, wheel2_vel,
+  //    last_action1, last_action2, velocity_command, yaw_command]
   // wheel1 = WHEEL_JOINT_NAMES[0] = banh TRAI (IN1/IN2/ENC_L), wheel2 = banh PHAI (IN3/IN4/ENC_R).
   obs[0] = (pitchDeg - PITCH_TRIM_DEG) * DEG_TO_RAD;   // pitch_angle (rad)
   // pitch_rate (rad/s): DAU AM co chu dich. Trong sim, obs pitch_rate (root_ang_vel_b[:,1]) NGUOC
   // dau voi d(pitch_angle)/dt (do bang scripts/pid_balance.py: corr = -0.97), con rateDps o day la
   // +d(pitch)/dt (bo loc complementary can vay). Dao dau de khop voi phan phoi policy da train.
   obs[1] = -rateDps * DEG_TO_RAD;
-  obs[2] = wheelLVel;                                  // wheel1_vel (rad/s) - banh TRAI
-  obs[3] = wheelRVel;                                  // wheel2_vel (rad/s) - banh PHAI
-  obs[4] = prevAct[0];                                 // last_action1 - hanh dong policy tick truoc, banh TRAI
-  obs[5] = prevAct[1];                                 // last_action2 - banh PHAI
-  obs[6] = VEL_CMD_MPS;                                // velocity_command (m/s) - hien luon = 0
+  obs[2] = yawDeg * DEG_TO_RAD;                        // yaw_angle (rad, [-pi,pi]) so voi luc calibrate (mdp.relative_yaw)
+  obs[3] = yawRateDps * DEG_TO_RAD;                    // yaw_rate (rad/s), + = re TRAI (mdp.imu_yaw_rate)
+  obs[4] = wheelLVel;                                  // wheel1_vel (rad/s) - banh TRAI
+  obs[5] = wheelRVel;                                  // wheel2_vel (rad/s) - banh PHAI
+  obs[6] = prevAct[0];                                 // last_action1 - hanh dong policy tick truoc, banh TRAI
+  obs[7] = prevAct[1];                                 // last_action2 - banh PHAI
+  obs[8] = VEL_CMD_MPS;                                // velocity_command (m/s)
+  obs[9] = YAW_CMD_RAD;                                // yaw_command (rad), goc muc tieu
 }
 
 // ====================== MOTOR SHAPER (pulse-density) =========================
@@ -270,13 +307,43 @@ void motorTest(){
   Serial.println("# TEST xong. 2 banh nguoc nhau -> doi day dong co, hoac 'm -1'.");
   lastLoopUs=micros();
 }
+// Kiem anh xa action -> banh: cho RIENG act[0] roi RIENG act[1] = +duong, di qua dung duong
+// WHEEL_SWAP/MOTOR_SIGN ma policy dung, do encoder (da nhan ENC_x_SIGN) xem banh nao quay, chieu nao.
+// Dung: act[0]+ -> CHI banh TRAI quay, encL DUONG; act[1]+ -> CHI banh PHAI quay, encR DUONG.
+// NHAC BANH KHOI MAT DAT truoc khi chay.
+void wheelMapTest(){
+  const float D=0.6f;
+  for(int k=0;k<2;k++){
+    float act[2]={0.0f,0.0f}; act[k]=1.0f;
+    float uL = WHEEL_SWAP ? act[1] : act[0];
+    float uR = WHEEL_SWAP ? act[0] : act[1];
+    resetOdometry();
+    Serial.printf("# TEST act[%d]=+ 1.5s (mong doi: CHI banh %s quay TIEN)...\n", k, k==0?"TRAI":"PHAI");
+    writeMotorPins(IN1,IN2,PWM_A, MOTOR_SIGN*uL*D);
+    writeMotorPins(IN3,IN4,PWM_B, MOTOR_SIGN*uR*D);
+    delay(1500);
+    long long dL = (long long)ENC_L_SIGN*encL.getCount();
+    long long dR = (long long)ENC_R_SIGN*encR.getCount();
+    motorCoast(); delay(600);
+    Serial.printf("#   encL=%+lld encR=%+lld -> ", dL, dR);
+    long long mine = (k==0)?dL:dR, other=(k==0)?dR:dL;
+    if(llabs(other) > llabs(mine))  Serial.println("SAI: banh KIA quay -> 2 motor bi doi cho, go 'w1' (hoac doi day)");
+    else if(mine < 0)               Serial.println("SAI CHIEU: banh dung nhung encoder AM -> neu banh that su quay TIEN thi dao ENC sign ('e'/'r'), neu quay LUI thi dao chieu motor do");
+    else                            Serial.println("OK");
+  }
+  resetOdometry(); prevAct[0]=prevAct[1]=0.0f;
+  Serial.println("# Nho NHIN bang mat: banh co quay TIEN (xe di toi) khong -- encoder chi dung khi ENC sign dung.");
+  lastLoopUs=micros();
+}
 
 // ============================ SERIAL TUNER ===================================
 void printParams(){
   Serial.printf("# PARAM scale=%.2f trim=%.2f MIN=%.2f MAX=%.2f dead=%.3f nearCap=%.2f "
-                "MOTOR_SIGN=%d GYRO=%d PITCH=%d ENC_L=%d ENC_R=%d swap=%d en=%d | %dHz, MLP %d lop obs=%d act=%d infer=%luus\n",
+                "vCmd=%.3f yawCmd=%.1fdeg yawLPF=%.1fHz "
+                "MOTOR_SIGN=%d GYRO=%d PITCH=%d YAW=%d ENC_L=%d ENC_R=%d swap=%d en=%d | %dHz, MLP %d lop obs=%d act=%d infer=%luus\n",
                 U_SCALE, PITCH_TRIM_DEG, MIN_DUTY, MAX_DUTY, U_DEADBAND, NEAR_BAL_MAX_DUTY,
-                MOTOR_SIGN, GYRO_SIGN, PITCH_SIGN, ENC_L_SIGN, ENC_R_SIGN, WHEEL_SWAP, enabled,
+                VEL_CMD_MPS, YAW_CMD_RAD*RAD_TO_DEG, YAW_LPF_HZ,
+                MOTOR_SIGN, GYRO_SIGN, PITCH_SIGN, YAW_SIGN, ENC_L_SIGN, ENC_R_SIGN, WHEEL_SWAP, enabled,
                 CONTROL_HZ, POLICY_N_LAYERS, POLICY_OBS_DIM, POLICY_ACT_DIM, inferUs);
 }
 void parseCmd(char*s){
@@ -293,8 +360,14 @@ void parseCmd(char*s){
     case 'e': ENC_L_SIGN  =(v>=0)?+1:-1; resetOdometry(); break;      // dao chieu dem encoder banh A
     case 'r': ENC_R_SIGN  =(v>=0)?+1:-1; resetOdometry(); break;      // dao chieu dem encoder banh B
     case 'w': WHEEL_SWAP  =(v>=0.5f)?1:0; break;                      // doi thu tu 2 action (chi co tac dung khi POLICY_ACT_DIM==2)
+    case 'v': VEL_CMD_MPS =constrain(v,-VEL_CMD_MAX,VEL_CMD_MAX); break; // lenh van toc tien/lui (m/s)
+    case 'y': YAW_CMD_RAD =constrain(v,-180.0f,180.0f)*DEG_TO_RAD; break; // goc muc tieu, nhap theo DO, + = trai
+    case 'z': YAW_SIGN    =(v>=0)?+1:-1; break;                        // dao dau gyro Z
+    case 'f': YAW_LPF_HZ  =constrain(v,0.0f,50.0f); break;             // tan so cat loc yaw (0 = tat)
     case 'c': motorCoast(); calibrate(); break;
+    case 'h': yawDeg=0.0f; YAW_CMD_RAD=0.0f; Serial.println("# YAW = 0, yawCmd = 0"); return; // huong hien tai thanh yaw 0, muc tieu = giu huong nay
     case 't': motorCoast(); motorTest(); return;
+    case 'j': motorCoast(); wheelMapTest(); return;                   // kiem act[0]/act[1] -> banh nao, chieu nao
     case 'x': enabled=false; motorCoast(); Serial.println("# STOP motor OFF"); break;
     case 'o': enabled=true; prevAct[0]=prevAct[1]=0.0f; Serial.println("# GO motor ON"); break;
     case '?': default: printParams(); return;
@@ -314,13 +387,47 @@ void telemetry(){
   if(millis()-last < 100) return;
   last=millis();
   // Dong debug day du (dang comment, plotter se bo qua vi khong dung format so lieu)
-  Serial.printf("# pitch=%6.2f rate=%7.1f uL=%+.3f uR=%+.3f duty=%4.0f%% | encL=%lld encR=%lld velL=%5.1f velR=%5.1f | infer=%luus %s\n",
-                -pitchDeg, rateDps, lastUL, lastUR, lastDutyFrac*100.0f,
+  Serial.printf("# pitch=%6.2f rate=%7.1f yaw=%7.1f yawAng=%7.1f uL=%+.3f uR=%+.3f duty=%4.0f%% | encL=%lld encR=%lld velL=%5.1f velR=%5.1f | infer=%luus %s\n",
+                pitchDeg, rateDps, yawRateDps, yawDeg, lastUL, lastUR, lastDutyFrac*100.0f,
                 (long long)encLCount, (long long)encRCount, wheelLVel, wheelRVel, inferUs,
                 enabled ? "" : "[OFF]");
   // Dong so lieu "ten:gia_tri" rieng, dung format PlatformIO/Arduino Serial Plotter can de ve do thi
-  Serial.printf("pitch:%.2f,rate:%.1f,uL:%.3f,uR:%.3f,duty:%.1f,velL:%.1f,velR:%.1f\n",
-                -pitchDeg, rateDps, lastUL, lastUR, lastDutyFrac*100.0f, wheelLVel, wheelRVel);
+  Serial.printf("pitch:%.2f,rate:%.1f,yaw:%.1f,yawAng:%.1f,uL:%.3f,uR:%.3f,duty:%.1f,velL:%.1f,velR:%.1f\n",
+                pitchDeg, rateDps, yawRateDps, yawDeg, lastUL, lastUR, lastDutyFrac*100.0f, wheelLVel, wheelRVel);
+}
+
+// In ly do chip khoi dong. ROM bootloader cung in ly do nay nhung o baud co dinh 74880,
+// lech voi baud app nen hien thanh ky tu loan -> doc lai bang API va in o baud app.
+void printResetReason(){
+  const char* s;
+  switch(esp_reset_reason()){
+    case ESP_RST_POWERON:   s="POWERON (cap nguon / nut EN)"; break;
+    case ESP_RST_EXT:       s="EXT (chan reset ngoai)"; break;
+    case ESP_RST_SW:        s="SW (code goi esp_restart)"; break;
+    case ESP_RST_PANIC:     s="PANIC - crash phan mem (xem Guru Meditation/backtrace phia tren)"; break;
+    case ESP_RST_INT_WDT:   s="INT_WDT - watchdog ngat (code chan ngat qua lau)"; break;
+    case ESP_RST_TASK_WDT:  s="TASK_WDT - watchdog task (loop()/1 ham bi treo qua lau)"; break;
+    case ESP_RST_WDT:       s="WDT - watchdog khac"; break;
+    case ESP_RST_BROWNOUT:  s="BROWNOUT - SUT AP nguon (dong motor dot bien, thieu tu loc/nguon chung)"; break;
+    case ESP_RST_DEEPSLEEP: s="DEEPSLEEP"; break;
+    case ESP_RST_SDIO:      s="SDIO"; break;
+    default:                s="KHONG XAC DINH"; break;
+  }
+  Serial.printf("# RESET REASON: %s\n", s);
+}
+
+// CHAN DOAN: nang nguong brownout tu muc 0 (~2.43V, mac dinh) len muc 7 (~2.80V). Mot lan sut 3V3
+// ngan se bi bat la BROWNOUT truoc khi xuong toi muc power-on-reset (bao nham la POWERON).
+// Logic analyzer so khong thay duoc sut ap (van doc la 1 khi con > ~1.5V) nen can cach nay.
+// 2.80V van thap hon muc toi thieu 3.0V cua ESP32 -> khong reset oan khi nguon on.
+const int BOD_LEVEL = 7;   // 0..7, -1 = giu mac dinh
+void setBrownoutLevel(){
+  if(BOD_LEVEL < 0) return;
+  REG_SET_FIELD(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_DBROWN_OUT_THRES, BOD_LEVEL);
+  Serial.printf("# BROWNOUT threshold level=%d (ena=%d rst=%d)\n",
+                (int)REG_GET_FIELD(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_DBROWN_OUT_THRES),
+                (int)REG_GET_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA) ? 1 : 0,
+                (int)REG_GET_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_RST_ENA) ? 1 : 0);
 }
 
 // ================================ SETUP ======================================
@@ -335,6 +442,8 @@ void setup(){
   Serial.setTxTimeoutMs(2);
 #endif
   delay(500);
+  printResetReason();
+  setBrownoutLevel();
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcAttach(ENA, PWM_FREQ, PWM_RES);
   ledcAttach(ENB, PWM_FREQ, PWM_RES);
@@ -369,6 +478,7 @@ void setup(){
   Serial.printf("# READY MLP %d lop, obs=%d act=%d, %dHz. Go '?' xem lenh.\n",
                 POLICY_N_LAYERS, POLICY_OBS_DIM, POLICY_ACT_DIM, CONTROL_HZ);
   Serial.println("# KIEM CHIEU: (1) 'm' chong nga, (2) neu xoay -> kiem tra dau day IN1-4 mot ben, hoac 'w 1' neu act=2.");
+  Serial.println("# KIEM YAW: xoay robot sang TRAI bang tay -> 'yaw' phai DUONG, neu am go 'z -1'. Lenh: v<m/s> y<do, goc muc tieu> h(yaw=0).");
   lastLoopUs=micros();
 }
 
