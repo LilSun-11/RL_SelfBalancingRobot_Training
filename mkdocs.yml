@@ -44,13 +44,14 @@ theme:
 nav:
   - Home: index.md
   - 1. Set Up Your Machine: 01-setup.md
-  - 2. Build the Robot URDF: 02-urdf.md
-  - 3. Import the Robot into Isaac Lab: 03-import.md
-  - 4. Create the RL Task: 04-task.md
-  - 5. Train the Policy: 05-train.md
-  - 6. Evaluate and Export: 06-evaluate.md
-  - 7. Sim-to-Real Deployment: 07-sim-to-real.md
-  - 8. Troubleshooting: 08-troubleshooting.md
+  - 2. Create the Project: 02-project.md
+  - 3. Build the Robot URDF: 03-urdf.md
+  - 4. Import the Robot into Isaac Lab: 04-import.md
+  - 5. Create the RL Task: 05-task.md
+  - 6. Train the Policy: 06-train.md
+  - 7. Evaluate and Export: 07-evaluate.md
+  - 8. Sim-to-Real Deployment: 08-sim-to-real.md
+  - 9. Troubleshooting: 09-troubleshooting.md
 
 markdown_extensions:
   - admonition
@@ -63,7 +64,9 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.tabbed:

@@ -1,4 +1,4 @@
-# 6. Evaluate and Export
+# 7. Evaluate and Export
 
 A rising reward curve is not proof that the robot behaves well. In this chapter you watch the trained
 policy, judge it, and export it in a format the microcontroller can use.
@@ -8,11 +8,11 @@ policy, judge it, and export it in a format the microcontroller can use.
     - Decide whether a policy is ready for the real robot.
     - Export the policy to ONNX and check its input/output size.
 
-## 6.1 Play a checkpoint
+## 7.1 Play a checkpoint
 
 ```bash
-cd ~/RL_SelfBalancingRobot_Training
-python scripts/rsl_rl/play.py --task=Template-SelfBalancing-Play-v0 \
+cd ~/SelfBalancing
+python scripts/rsl_rl/play.py --task=Template-Selfbalancing-Play-v0 \
     --load_run <run_folder> --checkpoint model_<N>.pt
 ```
 
@@ -26,13 +26,10 @@ Each robot shows three arrows above it:
 | Arrow | Meaning |
 |---|---|
 | Green | Target velocity (forward/backward) |
-| Blue | Actual velocity, leaning toward the side the robot is turning |
+| Blue | Actual velocity |
 | Orange | Target heading |
 
-A coordinate frame marks the chassis' true center of mass, which moves between robots because of the
-mass and CoM randomization.
-
-## 6.2 What to look for
+## 7.2 What to look for
 
 Before taking a policy to the real robot, check:
 
@@ -48,18 +45,18 @@ Before taking a policy to the real robot, check:
 Compare a few checkpoints of the same run (e.g. every 500 iterations): the latest is not always the
 best.
 
-## 6.3 Export the policy
+## 7.3 Export the policy
 
 `play.py` exports the loaded policy automatically, every time it runs:
 
 ```text
 logs/rsl_rl/selfbalancing/<run_folder>/exported/
 ├── policy.pt      ← TorchScript (for Python / C++ with LibTorch)
-└── policy.onnx    ← ONNX (used in chapter 7)
+└── policy.onnx    ← ONNX (used in chapter 8)
 ```
 
 The exported network contains only the actor (no critic, no exploration noise): 10 inputs in the
-order of chapter 4.6, 2 outputs.
+order of chapter 5.8, 2 outputs.
 
 Check the sizes before going further:
 
@@ -73,19 +70,6 @@ print('input', dims(m.graph.input[0]), 'output', dims(m.graph.output[0]))
 ```
 
 It must print `input [1, 10] output [1, 2]`.
-
-## 6.4 Optional: a classic controller as a reference
-
-`scripts/pid_balance.py` runs the PID controller of the PID firmware (`firmware/pid_controller`)
-inside the same simulation. If a well-tuned PID balances in sim but not on the real robot (or the
-other way around), the problem is in the model (chapters 2–3), not in RL. This is how a wrong
-pitch-rate sign was found during development.
-
-```bash
-python scripts/pid_balance.py --num_envs 64
-```
-
-It reports how many robots stayed upright for the whole episode.
 
 !!! success "Checkpoint"
     You have a `policy.onnx` with 10 inputs and 2 outputs from a checkpoint that passes the checks

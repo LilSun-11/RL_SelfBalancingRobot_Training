@@ -1,4 +1,4 @@
-# 7. Sim-to-Real Deployment
+# 8. Sim-to-Real Deployment
 
 The policy is a 1474-parameter network that turns 10 numbers into 2. In this chapter you build the
 robot, convert the network to plain C arrays, and run it on an ESP32 that computes those 10 numbers
@@ -6,27 +6,28 @@ from its sensors 100 times per second, exactly as the simulator did.
 
 !!! abstract "Learning objectives"
     - Know which simulation choices make the transfer work.
-    - Wire the robot and flash the firmware.
-    - Convert `policy.onnx` to a C header and verify it.
+    - Wire the robot.
+    - Add the ONNX-to-C converter and the firmware to your project.
+    - Convert `policy.onnx` to a C header, verify it and flash the firmware.
     - Check every sensor sign before letting the robot go.
 
-## 7.1 Why the policy can work on a real robot
+## 8.1 Why the policy can work on a real robot
 
 The *reality gap* is everything that differs between the simulator and the real robot. This project
 closes it in four ways, all set up in earlier chapters:
 
 | Real-world effect | How the simulation covers it | Where |
 |---|---|---|
-| Sensor noise | Gaussian noise on every sensor observation | 4.6 |
-| Unknown exact mass and balance point | Chassis mass ×0.8–1.2, CoM ±5 mm | 4.8 |
-| Gearbox friction, motors not identical | Joint friction randomized, independently per wheel | 4.8 |
-| Motor driver reacts late | Actuator delay of 10–40 ms, resampled every episode | 3.4 |
-| Delay makes the robot "forget" what it ordered | Previous actions observed | 4.6 |
-| Same control rate | 100 Hz in sim and in firmware | 4.3 |
+| Sensor noise | Gaussian noise on every sensor observation | 5.8 |
+| Unknown exact mass and balance point | Chassis mass ×0.8–1.2, CoM ±5 mm | 5.8 |
+| Gearbox friction, motors not identical | Joint friction randomized, independently per wheel | 5.8 |
+| Motor driver reacts late | Actuator delay of 10–40 ms, resampled every episode | 4.4 |
+| Delay makes the robot "forget" what it ordered | Previous actions observed | 5.8 |
+| Same control rate | 100 Hz in sim and in firmware | 5.8 |
 
 What is **not** randomized must instead be matched exactly: the observation order, units and signs.
 
-## 7.2 Hardware
+## 8.2 Hardware
 
 ### Bill of materials
 
@@ -67,7 +68,7 @@ GND: battery, L298N, buck converter, ESP32, IMU, encoders — ALL connected toge
     4. Check the battery polarity with a multimeter before the first power-up.
     5. Mount the IMU firmly near the wheel axle.
 
-## 7.3 Prepare the PC
+## 8.3 Prepare the PC
 
 Allow your user to access USB serial ports (once), then log out and back in:
 
@@ -87,14 +88,82 @@ conda activate env_isaaclab
 pip install numpy onnx onnxruntime
 ```
 
-## 7.4 Convert the policy to a C header
+## 8.4 Add the converter
+
+The converter turns `policy.onnx` into a C header. Create a `tools/` folder in your project:
 
 ```bash
-cd ~/RL_SelfBalancingRobot_Training
+cd ~/SelfBalancing
+mkdir -p tools
+gedit tools/export_policy_header.py
+```
+
+Paste the script and save. It is long because it checks the network carefully and refuses anything
+it cannot convert exactly; the comment at the top explains how it works.
+
+??? example "`tools/export_policy_header.py` (complete file)"
+
+    ```python
+    --8<-- "tools/export_policy_header.py"
+    ```
+
+[:material-download: Download `export_policy_header.py`](https://raw.githubusercontent.com/LilSun-11/RL_SelfBalancingRobot_Training/master/tools/export_policy_header.py){ .md-button }
+
+## 8.5 Create the firmware project
+
+Create a PlatformIO project for the ESP32 inside your project:
+
+```bash
+cd ~/SelfBalancing
+mkdir -p firmware/policy_controller
+cd firmware/policy_controller
+pio project init --board esp32dev
+```
+
+PlatformIO creates `platformio.ini`, `src/`, `include/`, `lib/` and `test/`. Replace the content of
+`platformio.ini`:
+
+```ini title="firmware/policy_controller/platformio.ini"
+--8<-- "firmware/policy_controller/platformio.ini"
+```
+
+`lib_deps` downloads the `ESP32Encoder` library on the first build; `monitor_speed` must match
+`Serial.begin(921600)` in the program.
+
+Create `src/main.cpp` and paste the firmware:
+
+```bash
+gedit src/main.cpp
+```
+
+??? example "`firmware/policy_controller/src/main.cpp` (complete file)"
+
+    ```cpp
+    --8<-- "firmware/policy_controller/src/main.cpp"
+    ```
+
+[:material-download: Download `main.cpp`](https://raw.githubusercontent.com/LilSun-11/RL_SelfBalancingRobot_Training/master/firmware/policy_controller/src/main.cpp){ .md-button }
+
+The comments in the firmware are in Vietnamese; [8.7](#87-how-the-firmware-rebuilds-the-observations)
+explains the parts that matter. The project does not compile yet: `include/policy_weights.h` is
+generated in the next step.
+
+!!! warning "Pins and wheel order"
+    The pin numbers at the top of `main.cpp` match the wiring in 8.2. `WHEEL_SWAP = 1` matches the
+    lab robot, whose motor wires are crossed; the `j` test in 8.10 tells you whether your robot needs
+    `w0` instead.
+
+## 8.6 Convert the policy to a C header
+
+```bash
+cd ~/SelfBalancing
 python tools/export_policy_header.py \
     --model logs/rsl_rl/selfbalancing/<run_folder>/exported/policy.onnx \
     --out firmware/policy_controller/include/policy_weights.h --verify
 ```
+
+Replace `<run_folder>` with the run you exported in chapter 7.3. The header is written straight into
+the firmware's `include/` folder.
 
 The converter reads the ONNX graph, checks that it is a straight chain of linear layers and
 activations (ELU, ReLU, Tanh, Sigmoid), and writes every weight and bias as a `static const float`
@@ -122,10 +191,9 @@ for (int l = 0; l < POLICY_N_LAYERS; l++) {
 No AI runtime is needed on the microcontroller, the timing is predictable, and inference takes tens
 of microseconds.
 
-## 7.5 How the firmware rebuilds the observations
+## 8.7 How the firmware rebuilds the observations
 
-[`firmware/policy_controller/src/main.cpp`](https://github.com/LilSun-11/RL_SelfBalancingRobot_Training/blob/master/firmware/policy_controller/src/main.cpp)
-runs this loop every 10 ms:
+`firmware/policy_controller/src/main.cpp` runs this loop every 10 ms:
 
 ```mermaid
 flowchart TD
@@ -169,12 +237,12 @@ The output `u ∈ [−1, 1]` per wheel becomes a 20 kHz PWM duty through a *shap
 deadband, a minimum duty to overcome motor stiction, and a duty cap near balance (see
 [Motor output shaping](https://github.com/LilSun-11/RL_SelfBalancingRobot_Training/blob/master/firmware/README.md#motor-output-shaping)).
 
-## 7.6 Build and flash
+## 8.8 Build and flash
 
 Connect the ESP32 with a **data** USB cable (it appears as `/dev/ttyUSB0`), then:
 
 ```bash
-cd ~/RL_SelfBalancingRobot_Training/firmware/policy_controller
+cd ~/SelfBalancing/firmware/policy_controller
 pio run -t upload        # build and flash (the first build downloads the toolchain)
 pio device monitor       # 921600 baud; Ctrl + C to exit, close it before the next upload
 ```
@@ -182,7 +250,7 @@ pio device monitor       # 921600 baud; Ctrl + C to exit, close it before the ne
 On boot the firmware calibrates the IMU for ~2 s: **hold the robot upright and still** until it
 prints `# CALIB offset=...`, then `# READY MLP 3 lop, obs=10 act=2`.
 
-## 7.7 Serial commands
+## 8.9 Serial commands
 
 Type a command and press Enter in the serial monitor. `?` prints all parameters.
 
@@ -201,7 +269,7 @@ Type a command and press Enter in the serial monitor. `?` prints all parameters.
 
 The full list is in [firmware/README.md](https://github.com/LilSun-11/RL_SelfBalancingRobot_Training/blob/master/firmware/README.md#serial-commands).
 
-## 7.8 First run: test one thing at a time
+## 8.10 First run: test one thing at a time
 
 The motors are **on** after boot, so send `x` first.
 

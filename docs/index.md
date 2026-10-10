@@ -28,14 +28,18 @@ and backward, and turn to a commanded heading.
 
 | Chapter | You will | Result |
 |---|---|---|
-| [1. Set up your machine](01-setup.md) | Install Isaac Sim, Isaac Lab, this project and PlatformIO | A working `env_isaaclab` environment |
-| [2. Build the robot URDF](02-urdf.md) | Describe the robot's links, joints, masses and inertias | `SelfBalancingRobot_simplified.urdf` |
-| [3. Import the robot into Isaac Lab](03-import.md) | Load the URDF and model the motors | `robot.py` (`TwoWheel_CFG`) |
-| [4. Create the RL task](04-task.md) | Define observations, actions, commands, rewards, randomization | `selfbalancing_env_cfg.py` |
-| [5. Train the policy](05-train.md) | Run PPO on thousands of robots in parallel | Checkpoints and TensorBoard curves |
-| [6. Evaluate and export](06-evaluate.md) | Watch the policy, pick a checkpoint, export it | `policy.onnx` |
-| [7. Sim-to-real deployment](07-sim-to-real.md) | Wire the robot, convert the network to C, flash the ESP32 | A balancing real robot |
-| [8. Troubleshooting](08-troubleshooting.md) | Fix common problems | — |
+| [1. Set up your machine](01-setup.md) | Install Isaac Sim, Isaac Lab and PlatformIO | A working `env_isaaclab` environment |
+| [2. Create the project](02-project.md) | Generate an Isaac Lab project from the template | `~/SelfBalancing` |
+| [3. Build the robot URDF](03-urdf.md) | Describe the robot's links, joints, masses and inertias | `SelfBalancingRobot_simplified.urdf` |
+| [4. Import the robot into Isaac Lab](04-import.md) | Load the URDF and model the motors | `robot.py` |
+| [5. Create the RL task](05-task.md) | Write observations, commands, events, rewards and the environment config | `mdp/*.py`, `selfbalancing_env_cfg.py` |
+| [6. Train the policy](06-train.md) | Run PPO on thousands of robots in parallel | Checkpoints and TensorBoard curves |
+| [7. Evaluate and export](07-evaluate.md) | Watch the policy, pick a checkpoint, export it | `policy.onnx` |
+| [8. Sim-to-real deployment](08-sim-to-real.md) | Wire the robot, add the converter and firmware, flash the ESP32 | A balancing real robot |
+| [9. Troubleshooting](09-troubleshooting.md) | Fix common problems | — |
+
+You build the whole project yourself, file by file. Every file you create is shown in full on the
+page where you create it.
 
 ## Before you start
 
@@ -43,7 +47,7 @@ You should be comfortable with:
 
 - Basic Linux terminal use (`cd`, `ls`, editing files).
 - Basic Python (classes, functions, reading someone else's code).
-- Basic C/C++ and Arduino (`setup()` / `loop()`), for chapter 7.
+- Basic C/C++ and Arduino (`setup()` / `loop()`), for chapter 8.
 
 You do **not** need prior experience with Isaac Lab or reinforcement learning; each chapter explains
 the concepts it uses.
@@ -51,12 +55,12 @@ the concepts it uses.
 You need:
 
 - A PC with **Ubuntu 22.04 or 24.04** and an **NVIDIA RTX GPU** (tested on an RTX 3080, 10 GB).
-- For chapter 7: the robot hardware listed in [7.2](07-sim-to-real.md#72-hardware).
+- For chapter 8: the robot hardware listed in [8.2](08-sim-to-real.md#82-hardware).
 
-!!! info "Source code"
-    Everything in this tutorial is in the repository
+!!! info "Reference solution"
+    The finished project is in the repository
     [LilSun-11/RL_SelfBalancingRobot_Training](https://github.com/LilSun-11/RL_SelfBalancingRobot_Training).
-    File paths in the chapters are relative to the repository root.
+    Build your own first; use it to compare when something does not work.
 
 ## Acknowledgements
 

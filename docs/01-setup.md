@@ -1,14 +1,14 @@
 # 1. Set Up Your Machine
 
 In this chapter you install everything the rest of the tutorial needs: Isaac Sim (the physics
-simulator), Isaac Lab (the robot-learning framework on top of it), this project, and PlatformIO
-(to flash the robot's microcontroller later).
+simulator), Isaac Lab (the robot-learning framework on top of it), and PlatformIO (to flash the
+robot's microcontroller later).
 
 !!! abstract "Learning objectives"
     - Create the `env_isaaclab` Python environment.
-    - Install Isaac Sim 5.1, Isaac Lab v2.3.2 and this project.
+    - Install Isaac Sim 5.1 and Isaac Lab v2.3.2.
     - Install PlatformIO.
-    - Confirm the training task is registered and runs.
+    - Confirm that Isaac Lab runs.
 
 Every command block can be copied and pasted into a terminal (`Ctrl + Alt + T`) as is.
 
@@ -84,23 +84,9 @@ git checkout v2.3.2
 ./isaaclab.sh --install rsl_rl
 ```
 
-## 1.5 Clone and install this project
+## 1.5 Install PlatformIO
 
-Clone it next to (not inside) the `IsaacLab` directory, then install it in editable mode so your
-code changes take effect without reinstalling:
-
-```bash
-cd ~
-git clone https://github.com/LilSun-11/RL_SelfBalancingRobot_Training.git
-cd ~/RL_SelfBalancingRobot_Training
-python -m pip install -e source/SelfBalancing
-```
-
-All later commands are run from `~/RL_SelfBalancingRobot_Training` unless a `cd` says otherwise.
-
-## 1.6 Install PlatformIO
-
-[PlatformIO](https://platformio.org/) builds the ESP32 firmware and flashes it over USB (chapter 7).
+[PlatformIO](https://platformio.org/) builds the ESP32 firmware and flashes it over USB (chapter 8).
 Its official installer puts it in its own folder (`~/.platformio`), so it never touches the
 packages of `env_isaaclab`:
 
@@ -115,23 +101,17 @@ conda activate env_isaaclab
 pio --version
 ```
 
-## 1.7 Verify the installation
+## 1.6 Verify the installation
 
-List the registered tasks. `Template-SelfBalancing-v0` and `Template-SelfBalancing-Play-v0` must
-appear:
-
-```bash
-cd ~/RL_SelfBalancingRobot_Training
-python scripts/list_envs.py
-```
-
-Run the task with zero actions. A window opens with many robots; with no torque on the wheels they
-simply fall over and reset. That is expected: it shows the robot, the scene and the task load
-correctly.
+Run one of Isaac Lab's own examples. A window opens with an empty scene and a ground plane:
 
 ```bash
-python scripts/zero_agent.py --task=Template-SelfBalancing-v0 --num_envs 16
+cd ~/IsaacLab
+python scripts/tutorials/00_sim/create_empty.py
 ```
+
+Close the window to stop it.
 
 !!! success "Checkpoint"
-    Both tasks are listed, and the zero-action rollout opens without errors.
+    Isaac Sim opens from Isaac Lab without errors, and `pio --version` prints a version number.
+    You are ready to create your own project.

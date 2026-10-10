@@ -1,4 +1,4 @@
-# 2. Build the Robot URDF
+# 3. Build the Robot URDF
 
 A simulator can only train a controller for the robot it is given. In this chapter you describe the
 real robot in a **URDF** (Unified Robot Description Format) file: what its parts are, how they are
@@ -10,10 +10,15 @@ trained policy will transfer.
     - Model each part with a simple shape and compute its inertia.
     - Place the joints so the wheels touch the ground at the right height.
 
-The result of this chapter is
-[`assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf`](https://github.com/LilSun-11/RL_SelfBalancingRobot_Training/blob/master/assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf).
+You will create **one new file** in your project:
 
-## 2.1 URDF in one minute
+```text
+~/SelfBalancing/assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf   NEW
+```
+
+The sections below explain each part of it; [3.7](#37-create-the-file) gives the complete file.
+
+## 3.1 URDF in one minute
 
 A URDF is an XML file with two kinds of elements:
 
@@ -28,7 +33,7 @@ The links form a tree with one root. For this robot the root is `base_link`, the
 **Frame convention used everywhere in this project:** X points forward, Y points to the robot's
 left, Z points up. Distances are in meters, masses in kilograms, angles in radians.
 
-## 2.2 Measure the real robot
+## 3.2 Measure the real robot
 
 Before writing anything, measure:
 
@@ -52,13 +57,13 @@ For this robot:
 Total: about 1.16 kg.
 
 !!! tip "Why boxes and cylinders instead of the CAD meshes?"
-    The repository also contains `RobotTwoWheel.urdf`, exported from SolidWorks with STL meshes. The
-    simplified model is used for training because every mass and inertia is written by hand from
+    A URDF can also be exported from CAD (e.g. the SolidWorks URDF exporter), with the real part
+    shapes as STL meshes. The simplified model is used for training because every mass and inertia is written by hand from
     real measurements (CAD exports often get these wrong, for example when parts have no material
     assigned), and primitive shapes make collision checking cheaper and more stable. For balancing,
     what matters is the mass distribution, not how the robot looks.
 
-## 2.3 Compute the inertia of each part
+## 3.3 Compute the inertia of each part
 
 The inertia tensor describes how hard it is to rotate a part about each axis. For a uniform solid
 part, about its own center:
@@ -94,7 +99,7 @@ print("wheel    ", cylinder(0.035, 0.034, 0.026))      # ixx=iyy=1.2087e-05, izz
 
 The off-diagonal terms (`ixy`, `ixz`, `iyz`) are 0 for a box or cylinder aligned with its frame.
 
-## 2.4 Write the links
+## 3.4 Write the links
 
 Each link puts its `<inertial>`, `<visual>` and `<collision>` at the part's center. Here is
 `base_link`; its center is 0.0375 m (half its height) above the link frame, so the frame sits at the
@@ -140,7 +145,7 @@ by 90° about X (`rpy="1.5707 0 0"`):
 </link>
 ```
 
-## 2.5 Connect the links with joints
+## 3.5 Connect the links with joints
 
 ```mermaid
 flowchart TD
@@ -166,9 +171,9 @@ they only contribute mass and inertia. The two wheel joints are `continuous` and
 
 `wheel1` is at +Y, so it is the **left** wheel; `wheel2` (at −Y) is the right wheel. With
 `axis="0 1 0"`, a positive wheel velocity rolls the robot forward (+X). Keep these two facts in mind:
-the firmware in chapter 7 must use the same left/right order and the same sign.
+the firmware in chapter 8 must use the same left/right order and the same sign.
 
-## 2.6 Check the ground clearance
+## 3.6 Check the ground clearance
 
 Add up the vertical offsets from `base_link` down to the bottom of a wheel:
 
@@ -179,8 +184,33 @@ Add up the vertical offsets from `base_link` down to the bottom of a wheel:
 | wheel center → bottom of wheel (radius) | −0.0340 |
 | **Total** | **−0.0680** |
 
-So when the wheels rest on the ground, `base_link` is 0.068 m above it. Chapter 3 spawns the robot at
+So when the wheels rest on the ground, `base_link` is 0.068 m above it. Chapter 4 spawns the robot at
 0.070 m, a 2 mm margin so the wheels drop onto the ground instead of starting inside it.
+
+## 3.7 Create the file
+
+Create the folder and the file:
+
+```bash
+cd ~/SelfBalancing
+mkdir -p assets/RobotTwoWheel/urdf
+gedit assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf   # or any editor, e.g. code, nano
+```
+
+Paste the complete URDF and save:
+
+??? example "`assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf` (complete file)"
+
+    ```xml
+    --8<-- "docs/code/assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf"
+    ```
+
+[:material-download: Download the file](code/assets/RobotTwoWheel/urdf/SelfBalancingRobot_simplified.urdf){ .md-button download }
+
+!!! tip "Building your own robot?"
+    Keep the structure (root `base_link`, fixed links merged into it, two `continuous` wheel joints
+    about Y, left wheel at +Y) and replace the sizes, masses, inertias and joint offsets with your
+    own measurements.
 
 !!! success "Checkpoint"
     You have a URDF whose masses add up to the real robot's weight, with the left wheel at +Y, both
