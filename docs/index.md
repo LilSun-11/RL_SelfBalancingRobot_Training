@@ -30,7 +30,7 @@ and backward, and turn to a commanded heading.
 |---|---|---|
 | [1. Set up your machine](01-setup.md) | Install Isaac Sim, Isaac Lab and PlatformIO | A working `env_isaaclab` environment |
 | [2. Create the project](02-project.md) | Generate an Isaac Lab project from the template | `~/SelfBalancing` |
-| [3. Build the robot URDF](03-urdf.md) | Describe the robot's links, joints, masses and inertias | `SelfBalancingRobot_simplified.urdf` |
+| [3. Build the robot URDF](03-urdf.md) | Describe the robot's links, joints, masses and inertias | `assets/SelfBalancingRobot.urdf` |
 | [4. Import the robot into Isaac Lab](04-import.md) | Load the URDF and model the motors | `robot.py` |
 | [5. Create the RL task](05-task.md) | Write observations, commands, events, rewards and the environment config | `mdp/*.py`, `selfbalancing_env_cfg.py` |
 | [6. Train the policy](06-train.md) | Run PPO on thousands of robots in parallel | Checkpoints and TensorBoard curves |

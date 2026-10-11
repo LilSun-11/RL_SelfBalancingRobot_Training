@@ -114,8 +114,8 @@ By the end of chapter 5 the project contains these files. **New** files are crea
 
 ```text
 ~/SelfBalancing/
-├── assets/RobotTwoWheel/urdf/
-│   └── SelfBalancingRobot_simplified.urdf   NEW      chapter 3
+├── assets/
+│   └── SelfBalancingRobot.urdf              NEW      chapter 3
 └── source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/
     ├── __init__.py                          CHANGED  chapter 5.9
     ├── robot.py                             NEW      chapter 4

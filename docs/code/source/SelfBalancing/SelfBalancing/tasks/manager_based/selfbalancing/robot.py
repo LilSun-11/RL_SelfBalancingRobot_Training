@@ -9,7 +9,7 @@ from isaaclab.assets import ArticulationCfg
 # Project root = 6 folders up from this file (.../tasks/manager_based/selfbalancing/robot.py), so the
 # path works wherever the project is.
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *([os.pardir] * 6)))
-ROBOT_URDF_PATH = os.path.join(_PROJECT_ROOT, "assets", "RobotTwoWheel", "urdf", "SelfBalancingRobot_simplified.urdf")
+ROBOT_URDF_PATH = os.path.join(_PROJECT_ROOT, "assets", "SelfBalancingRobot.urdf")
 
 TwoWheel_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(

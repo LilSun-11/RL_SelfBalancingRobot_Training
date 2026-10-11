@@ -37,7 +37,7 @@ from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *([os.pardir] * 6)))
-ROBOT_URDF_PATH = os.path.join(_PROJECT_ROOT, "assets", "RobotTwoWheel", "urdf", "SelfBalancingRobot_simplified.urdf")
+ROBOT_URDF_PATH = os.path.join(_PROJECT_ROOT, "assets", "SelfBalancingRobot.urdf")
 ```
 
 ## 4.2 Spawn settings
