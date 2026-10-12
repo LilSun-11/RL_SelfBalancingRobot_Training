@@ -36,26 +36,63 @@ the right place), then the **collision** shapes, then the **inertia**.
 
 ## 3.2 Measure the real robot
 
-Before writing anything, measure:
+Before writing anything, you need three things for every part of the robot:
 
-1. **Mass of each part** with a kitchen scale: chassis plate, upper plate, battery pack, each motor,
-   each wheel. Small items (screws, wires, the ESP32) can be added to the part they sit on.
-2. **Size of each part** (a bounding box is enough for a box-shaped part, radius and width for a
-   wheel).
-3. **Position of each part** relative to the chassis: how high the upper plate is, how far apart the
-   wheels are, how far the wheel axle is below the chassis.
+1. **Mass**, weighed with a kitchen scale: chassis, upper box, battery pack, each motor, each
+   wheel. Small items (screws, wires, the ESP32) can be added to the part they sit on.
+2. **Size**: a bounding box is enough for a box-shaped part; radius and width for a wheel.
+3. **Position** relative to the chassis: how high the upper box sits, how far apart the wheels are,
+   how far the wheel axle is below the chassis.
 
-For this robot:
+### The robot
 
-| Part | Link | Shape | Size (m) | Mass (kg) |
+The robot is modelled in CAD (SolidWorks) as two stacked boxes on two motor-driven wheels:
+
+![CAD model of the self-balancing robot](media/urdf/00_cad_model.png){ width="420" }
+
+| Part | Link name | What it is |
+|---|---|---|
+| Lower box | `base_link` | The chassis. It holds the electronics, and the motors are mounted under it. |
+| Upper box | `upper_base_link` | The top box, sitting on the chassis. |
+| Battery | `battery_link` | The battery pack, lying at the bottom of the upper box. |
+| Motors | `motor1`, `motor2` | The two DC gear motors, hanging under the chassis on L-brackets. |
+| Wheels | `wheel1`, `wheel2` | The two wheels, on the motor shafts. |
+
+### The dimensions
+
+The drawing below gives the measured size of each part: on the left, the **front view**, looking
+along the direction the robot drives; on the right, the **side view**.
+
+![Front and side view of the robot with dimensions](media/urdf/00_dimensions.png)
+
+To write them in the URDF, use the same axes as Isaac Lab:
+
+- **x** points forward (the direction the robot drives). It is the horizontal axis of the side view.
+- **y** points to the robot's left, along the wheel axle. It is the horizontal axis of the front view.
+- **z** points up.
+
+A URDF `<box size="x y z">` lists the sizes in that order, in **metres** (85 mm = 0.085 m). Read
+from the drawing, each part is:
+
+| Part | Link | Shape | Size x × y × z (m) | Mass (kg) |
 |---|---|---|---|---|
-| Lower chassis | `base_link` | box | 0.120 × 0.200 × 0.075 | 0.300 |
-| Upper plate | `upper_base_link` | box | 0.113 × 0.185 × 0.055 | 0.235 |
+| Lower box | `base_link` | box | 0.120 × 0.200 × 0.075 | 0.300 |
+| Upper box | `upper_base_link` | box | 0.113 × 0.185 × 0.055 | 0.235 |
 | Battery pack | `battery_link` | box | 0.081 × 0.076 × 0.020 | 0.215 |
 | Motor (×2) | `motor1`, `motor2` | box | 0.040 × 0.056 × 0.047 | 0.170 each |
-| Wheel (×2) | `wheel1`, `wheel2` | cylinder | r = 0.034, width = 0.026 | 0.035 each |
+| Wheel (×2) | `wheel1`, `wheel2` | cylinder | radius 0.034 (68 mm diameter), width 0.026 | 0.035 each |
 
 Total: about 1.16 kg.
+
+From these sizes you get the positions you need in section 3.4:
+
+| From the drawing | Value | Used for |
+|---|---|---|
+| Lower box height | 75 mm | The upper box starts 75 mm above the bottom of the chassis. |
+| Upper box height | 55 mm | Its centre is 75 + 55/2 = **102.5 mm** above the chassis bottom → `upper_base_joint` z = 0.1025. |
+| Battery height, at the bottom of the upper box | 20 mm | Battery centre is −55/2 + 20/2 = **−17.5 mm** from the upper box centre → `battery_upper_joint` z = −0.0175. |
+| Motor box height (z in the table above), hanging under the chassis | 47 mm | Motor centre is **23.5 mm** below the chassis bottom → `motor*_base_joint` z = −0.0235. |
+| Wheel axle below the chassis (side view) | 34 mm | With a 34 mm wheel radius, the chassis bottom is 34 + 34 = **68 mm** above the ground (section 3.7). |
 
 !!! tip "Why boxes and cylinders instead of the CAD meshes?"
     A URDF can also be exported from CAD (e.g. the SolidWorks URDF exporter), with the real part
