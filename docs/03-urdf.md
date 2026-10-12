@@ -469,6 +469,11 @@ Compare your file with the complete one below (or copy it), and save it as
 
 [:material-download: Download the file](code/assets/SelfBalancingRobot.urdf){ .md-button download }
 
+If everything is correct, the preview with **Show Collision** and **Show Inertia** turned on looks
+like this: the whole robot is drawn, and every part is covered by its collision and inertia boxes.
+
+![The complete URDF in VS Code with the URDF Visualizer preview](media/urdf/16_final.png)
+
 !!! tip "Building your own robot?"
     Keep the structure (root `base_link`, fixed links merged into it, two `continuous` wheel joints
     about Y, left wheel at +Y) and replace the sizes, masses, inertias and joint offsets with your
