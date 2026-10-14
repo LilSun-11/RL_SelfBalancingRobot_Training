@@ -19,7 +19,7 @@ closes it in four ways, all set up in earlier chapters:
 | Real-world effect | How the simulation covers it | Where |
 |---|---|---|
 | Sensor noise | Gaussian noise on every sensor observation | 5.8 |
-| Unknown exact mass and balance point | Chassis mass ×0.8–1.2, CoM ±5 mm | 5.8 |
+| Unknown exact mass and balance point | Chassis mass ×0.8–1.2, CoM ±1 mm | 5.8 |
 | Gearbox friction, motors not identical | Joint friction randomized, independently per wheel | 5.8 |
 | Motor driver reacts late | Actuator delay of 10–40 ms, resampled every episode | 4.4 |
 | Delay makes the robot "forget" what it ordered | Previous actions observed | 5.8 |

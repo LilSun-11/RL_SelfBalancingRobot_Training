@@ -11,7 +11,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
-    max_iterations = 5000
+    max_iterations = 3000  # 1500 + 500 + 1000, the curriculum stages in selfbalancing_env_cfg.py
     save_interval = 50
     experiment_name = "selfbalancing"
     clip_actions = 1.0  # clip actions to [-1, 1] before they reach the env

@@ -11,7 +11,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
-    max_iterations = 1000
+    max_iterations = 3000  # 1500 + 500 + 1000 iterations, see YAW_STAGES in selfbalancing_env_cfg.py
     save_interval = 50
     experiment_name = "selfbalancing"
     # Clip raw actions to [-1, 1] before they reach the env. Without it the policy can output huge raw

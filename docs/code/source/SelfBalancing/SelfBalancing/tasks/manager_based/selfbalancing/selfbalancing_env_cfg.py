@@ -22,12 +22,21 @@ from .robot import TwoWheel_CFG
 WHEEL_JOINT_NAMES = ["wheel1_motor1_joint", "wheel2_motor2_joint"]  # left (+Y), right (-Y)
 MOTOR_TORQUE_MAX = 0.49  # Nm, same as effort_limit in robot.py
 
-VELOCITY_RANGE = (-0.15, 0.15)  # m/s
-YAW_RANGE = (-math.pi, math.pi)  # rad, relative to the spawn heading
-YAW_MAX_STEP = math.radians(60.0)  # rad, max change of the target heading at each resample
+VELOCITY_RANGE = (-0.1, 0.1)  # m/s
 RESAMPLING_TIME = (5.0, 7.0)  # s
-YAW_CURRICULUM_ITERATIONS = 2000  # PPO iterations with the target heading held at 0
 STEPS_PER_ITERATION = 32  # = num_steps_per_env in agents/rsl_rl_ppo_cfg.py
+
+# Curriculum stages: (start iteration, value). Each stage holds until the next one starts.
+YAW_STAGES = [  # target heading range (rad), relative to the spawn heading
+    (0, (0.0, 0.0)),  # keep the spawn heading
+    (1500, (-math.radians(30.0), math.radians(30.0))),
+    (2000, (-math.radians(60.0), math.radians(60.0))),
+]
+PUSH_STAGES = [  # push force range (N)
+    (0, (0.0, 0.0)),  # no push
+    (1500, (-50.0, 50.0)),
+    (2000, (-100.0, 100.0)),
+]
 
 
 ##
@@ -84,9 +93,8 @@ class CommandsCfg:
     )
     target_yaw = mdp.UniformYawCommandCfg(
         asset_name="robot",
-        ranges=YAW_RANGE,
+        ranges=YAW_STAGES[0][1],  # changed by the curriculum
         resampling_time_range=RESAMPLING_TIME,
-        max_step=YAW_MAX_STEP,
         standing_command_name="target_velocity",
         debug_vis=True,  # orange = target heading
     )
@@ -147,7 +155,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "com_range": {"x": (-0.005, 0.005), "y": (-0.0001, 0.0001), "z": (-0.005, 0.005)},
+            "com_range": {"x": (-0.001, 0.001), "y": (-0.0001, 0.0001), "z": (-0.001, 0.001)},
         },
     )
     randomize_mass = EventTerm(
@@ -166,7 +174,7 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
             "friction_range": (0.010, 0.014),  # Nm
-            "asymmetry": 0.1,  # left and right differ by up to +-10%
+            "asymmetry": 0.25,  # left and right differ by up to +-25%
         },
     )
 
@@ -190,14 +198,14 @@ class EventCfg:
         },
     )
 
-    # -- interval: a short forward/backward kick every 4-6 s (0 N = off; try (-200.0, 200.0))
+    # -- interval: a short forward/backward kick every 2-4 s, its strength set by the curriculum
     push_robot = EventTerm(
         func=mdp.push_by_external_force_local_x,
         mode="interval",
-        interval_range_s=(4.0, 6.0),
+        interval_range_s=(2.0, 4.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (0.0, 0.0),
+            "force_range": PUSH_STAGES[0][1],  # changed by the curriculum
             "body_offset_z": 0.10,
         },
     )
@@ -231,7 +239,7 @@ class RewardsCfg:
     )
     velocity_tracking_bonus = RewTerm(
         func=mdp.velocity_command_tracking_bonus,
-        weight=7.5,
+        weight=2.5,
         params={"command_name": "target_velocity", "asset_cfg": SceneEntityCfg("robot"), "std": 0.05},
     )
 
@@ -242,7 +250,7 @@ class RewardsCfg:
     yaw_tracking_bonus = RewTerm(
         func=mdp.yaw_command_tracking_bonus, weight=2.0, params={"command_name": "target_yaw", "std": 0.2}
     )
-    yaw_rate = RewTerm(func=mdp.ang_vel_z_l2, weight=-0.5, params={"asset_cfg": SceneEntityCfg("robot")})
+    yaw_rate = RewTerm(func=mdp.ang_vel_z_l2, weight=-0.1, params={"asset_cfg": SceneEntityCfg("robot")})
 
     # -- smooth motor commands
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
@@ -258,18 +266,22 @@ class TerminationsCfg:
 
 @configclass
 class CurriculumsCfg:
-    """Keep the target heading at 0 for the first YAW_CURRICULUM_ITERATIONS iterations."""
+    """First balance and drive, then turn and resist pushes, harder in steps (YAW_STAGES, PUSH_STAGES)."""
 
-    yaw_range = CurrTerm(
+    yaw_stages = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
             "address": "commands.target_yaw.ranges",
-            "modify_fn": mdp.step_value_curriculum,
-            "modify_params": {
-                "start_value": (0.0, 0.0),
-                "end_value": YAW_RANGE,
-                "num_steps": YAW_CURRICULUM_ITERATIONS * STEPS_PER_ITERATION,
-            },
+            "modify_fn": mdp.staged_value_curriculum,
+            "modify_params": {"stages": [(it * STEPS_PER_ITERATION, v) for it, v in YAW_STAGES]},
+        },
+    )
+    push_stages = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.push_robot.params.force_range",
+            "modify_fn": mdp.staged_value_curriculum,
+            "modify_params": {"stages": [(it * STEPS_PER_ITERATION, v) for it, v in PUSH_STAGES]},
         },
     )
 
@@ -305,4 +317,8 @@ class SelfbalancingEnvCfg_PLAY(SelfbalancingEnvCfg):
         self.scene.num_envs = 360
         self.scene.env_spacing = 2.0
         self.observations.policy.enable_corruption = False  # no sensor noise
-        self.curriculum.yaw_range = None  # full heading range right away
+        # last curriculum stage right away
+        self.curriculum.yaw_stages = None
+        self.curriculum.push_stages = None
+        self.commands.target_yaw.ranges = YAW_STAGES[-1][1]
+        self.events.push_robot.params["force_range"] = PUSH_STAGES[-1][1]

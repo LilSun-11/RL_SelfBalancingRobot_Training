@@ -17,7 +17,7 @@ progress, and learn what to change when a run does not converge.
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32          # steps collected per robot per iteration
-    max_iterations = 5000
+    max_iterations = 3000           # the three curriculum stages: 1500 + 500 + 1000
     save_interval = 50              # save a checkpoint every 50 iterations
     experiment_name = "selfbalancing"
     clip_actions = 1.0              # actions are clipped to [-1, 1] before reaching the env
@@ -59,17 +59,17 @@ Useful flags:
 |---|---|
 | `--headless` | No viewport (much faster). Remove it to watch the robots learn. |
 | `--num_envs <N>` | Number of parallel robots (default 8196). Lower it if the GPU runs out of memory. |
-| `--max_iterations <N>` | Number of PPO iterations (default 5000, from the agent config). |
+| `--max_iterations <N>` | Number of PPO iterations (default 3000, from the agent config). |
 | `--seed <N>` | Random seed. |
 | `--run_name <name>` | Suffix for the log folder, to tell runs apart. |
 
 Logs and checkpoints are written to `logs/rsl_rl/selfbalancing/<date>_<time>[_<run_name>]/`
 (`model_<iteration>.pt`, the TensorBoard event file, and `params/` with the exact config used).
 
-Training the full task (balance, velocity and heading) takes a few thousand iterations. Remember the
-curriculum: the heading targets only start after 2000 iterations. On an RTX 3080, 5000 iterations
-with 8196 robots take a few hours; you can stop with `Ctrl + C` at any time and use the latest
-checkpoint.
+Training the full task (balance, velocity, heading and pushes) takes 3000 iterations. Remember the
+curriculum: the heading targets and pushes start at iteration 1500 and get harder at 2000, so train
+at least that long. On an RTX 3080, 2000 iterations with 8196 robots took about 23 minutes; you can
+stop with `Ctrl + C` at any time and use the latest checkpoint.
 
 ## 6.3 Change settings without editing files
 
@@ -80,7 +80,7 @@ flags:
 python scripts/rsl_rl/train.py --task=Template-Selfbalancing-v0 --headless \
     env.rewards.action_rate.weight=-0.2 \
     env.commands.target_velocity.ranges="[-0.1,0.1]" \
-    env.curriculum.yaw_range=null \
+    env.curriculum.push_stages=null \
     agent.max_iterations=3000
 ```
 
@@ -105,7 +105,7 @@ Open <http://localhost:6006>. The most useful curves:
 | `Episode_Termination/time_out` | Rises toward 1. |
 | `Train/mean_reward` | Rises, then flattens. |
 | `Metrics/target_velocity/error_vel` | Mean speed error (m/s), going down. |
-| `Metrics/target_yaw/error_yaw` | Mean heading error (rad); rises when the curriculum enables heading targets, then goes down. |
+| `Metrics/target_yaw/error_yaw` | Mean heading error (rad); rises at each curriculum stage (iterations 1500 and 2000), then goes down. |
 | `Episode_Reward/<term>` | Contribution of each reward term; shows which one dominates. |
 | `Loss/value_function`, `Policy/mean_noise_std` | Value loss should stay finite; the action noise should slowly decrease. |
 
@@ -119,8 +119,11 @@ python scripts/rsl_rl/train.py --task=Template-Selfbalancing-v0 --headless \
 - `--max_iterations` adds that many iterations on top of the checkpoint.
 - You can change reward weights, randomization or commands between runs, but **not** the number of
   observations or actions (the network's input and output size).
-- The curriculum counts steps from the start of each `train.py` process. When resuming a run that is
-  already past 2000 iterations, add `env.curriculum.yaw_range=null` to keep the full heading range.
+- The curriculum counts steps from the start of each `train.py` process, so a resumed run starts again
+  at stage 1 (no heading targets, no pushes). When resuming a run that already finished the
+  curriculum, add `env.curriculum.yaw_stages=null env.curriculum.push_stages=null` and set the last
+  stage directly:
+  `env.commands.target_yaw.ranges="[-1.047,1.047]" env.events.push_robot.params.force_range="[-100.0,100.0]"`.
 
 ## 6.6 When training goes wrong
 
@@ -154,4 +157,5 @@ These are problems met while developing this project, and what fixed them.
 
 !!! success "Checkpoint"
     `mean_episode_length` reaches ~2000 steps, `fell_over` is near 0, and the tracking errors go
-    down after the curriculum switches on the heading targets.
+    down again after each curriculum stage (iterations 1500 and 2000). A short drop of the reward at
+    those iterations is expected: the task just got harder.

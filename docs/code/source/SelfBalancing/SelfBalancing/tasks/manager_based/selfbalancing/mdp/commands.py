@@ -153,8 +153,9 @@ class UniformYawCommand(CommandTerm):
     """Target heading (rad) relative to the heading the robot spawned with, + = left, in [-pi, pi].
 
     The spawn heading of each env is stored at reset and counts as yaw 0, like a real robot that
-    integrates its gyro from 0 at start-up. Every ``cfg.resampling_time_range`` seconds the target moves
-    by at most ``cfg.max_step`` from the previous one. Envs that the velocity command
+    integrates its gyro from 0 at start-up. Every ``cfg.resampling_time_range`` seconds a new target is
+    drawn in ``cfg.ranges`` (or, if ``cfg.max_step`` is set, at most ``cfg.max_step`` away from the
+    previous one). Envs that the velocity command
     ``cfg.standing_command_name`` tells to stand still keep the heading they have.
     """
 
@@ -207,8 +208,12 @@ class UniformYawCommand(CommandTerm):
 
     def _resample_command(self, env_ids: Sequence[int]):
         old = self.yaw_command[env_ids, 0].clone()
-        step = torch.empty(len(env_ids), device=self.device).uniform_(-self.cfg.max_step, self.cfg.max_step)
-        new = math_utils.wrap_to_pi(old + step).clamp(*self.cfg.ranges)
+        r = torch.empty(len(env_ids), device=self.device)
+        if self.cfg.max_step is None:
+            new = r.uniform_(*self.cfg.ranges)
+        else:
+            step = r.uniform_(-self.cfg.max_step, self.cfg.max_step)
+            new = math_utils.wrap_to_pi(old + step).clamp(*self.cfg.ranges)
         # standing envs keep their current target
         self.yaw_command[env_ids, 0] = torch.where(self._standing()[env_ids], old, new)
 
@@ -251,8 +256,8 @@ class UniformYawCommandCfg(CommandTermCfg):
     ranges: tuple[float, float] = MISSING
     """Allowed range of the target yaw (rad), within [-pi, pi]."""
 
-    max_step: float = MISSING
-    """Maximum change of the target at each resample (rad)."""
+    max_step: float | None = None
+    """Maximum change of the target at each resample (rad). None: any value in ``ranges``."""
 
     standing_command_name: str = MISSING
     """Name of the UniformVelocityCommand term whose standing envs hold their heading."""

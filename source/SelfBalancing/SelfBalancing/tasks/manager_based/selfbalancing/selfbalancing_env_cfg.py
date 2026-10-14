@@ -24,16 +24,34 @@ MOTOR_TORQUE_MAX = 0.49  # Nm — matches the "wheels" actuator's effort_limit i
 
 WHEEL_RADIUS = 0.034  # m — wheel1/wheel2 cylinder radius in SelfBalancingRobot_simplified.urdf
 
-VELOCITY_RANGE_MAX = (-0.15, 0.15)  # m/s — target_velocity sampling range
+VELOCITY_RANGE_MAX = (-0.1, 0.1)  # m/s — target_velocity sampling range
 VELOCITY_RESAMPLING_TIME = (5.0, 7.0)  # s — target_velocity is resampled after a random 3-5 s interval
 # YAW_RATE_RANGE_MAX = (-0.3, 0.3)  # rad/s, + = turn left — target_yaw_rate sampling range (disabled)
 # YAW_RATE_RESAMPLING_TIME = (5.0, 7.0)  # s — target_yaw_rate resampling interval (disabled)
-YAW_RANGE_MAX = (-math.pi, math.pi)  # rad, + = left of the spawn heading — target_yaw sampling range
+YAW_RANGE_MAX = (-math.radians(60.0), math.radians(60.0))  # rad, + = left of the spawn heading — final
+# target_yaw sampling range (last stage of YAW_STAGES below, and what PLAY uses)
 YAW_RESAMPLING_TIME = (5.0, 7.0)  # s — target_yaw is resampled after a random 5-7 s interval
-YAW_MAX_STEP = math.radians(60.0)
+YAW_MAX_STEP = math.radians(30.0)
 YAW_CURRICULUM_ITERATIONS = 2000  # PPO iterations with target_yaw held at 0 before YAW_RANGE_MAX is enabled
 YAW_CURRICULUM_STEPS = YAW_CURRICULUM_ITERATIONS * 32  # env steps (num_steps_per_env = 32 in
 # agents/rsl_rl_ppo_cfg.py); env.common_step_counter restarts at 0 on every launch, --resume included  # rad — each new target_yaw is within +-30 deg of the previous one
+# Staged curriculum (CurriculumsCfg.yaw_stages / push_stages): (start iteration, value). Each stage
+# holds until the next one starts; with max_iterations = 3000 (agents/rsl_rl_ppo_cfg.py):
+#   0-1500:    target_yaw = 0 (keep the spawn heading), no push
+#   1500-2000: target_yaw in +-30 deg, push +-50 N
+#   2000-3000: target_yaw in +-60 deg, push +-100 N
+NUM_STEPS_PER_ENV = 32  # = num_steps_per_env in agents/rsl_rl_ppo_cfg.py (1 iteration = 32 env steps)
+YAW_STAGES = [
+    (0, (0.0, 0.0)),
+    (1500, (-math.radians(30.0), math.radians(30.0))),
+    (2000, YAW_RANGE_MAX),
+]
+PUSH_STAGES = [
+    (0, (0.0, 0.0)),
+    (1500, (-50.0, 50.0)),
+    (2000, (-100.0, 100.0)),
+]
+PUSH_FORCE_MAX = PUSH_STAGES[-1][1]  # N — final push force range (what PLAY uses)
 # The constants below are only used by the (currently disabled) curricula in CurriculumsCfg.
 YAW_GATE_MAX_FALL_RATE = 0.1  # fraction of resetting envs that fell (vs. timed out)
 YAW_GATE_MAX_VELOCITY_ERROR = 0.02  # m/s, mean |target - actual| forward velocity
@@ -134,9 +152,9 @@ class CommandsCfg:
     # Resampled after a random 5-7 s interval; standing envs of target_velocity hold their current yaw.
     target_yaw = mdp.UniformYawCommandCfg(
         asset_name="robot",
-        ranges=YAW_RANGE_MAX,
+        ranges=YAW_STAGES[0][1],  # set by the yaw_stages curriculum (0 at the start of training)
         resampling_time_range=YAW_RESAMPLING_TIME,
-        max_step=YAW_MAX_STEP,  # small turns from the previous target instead of jumps of up to 180 deg
+        max_step=None,  # uniform over the full range, like run 2026-10-08_15-17-25 (was YAW_MAX_STEP)
         standing_command_name="target_velocity",
         debug_vis=True,  # orange arrow = target heading
     )
@@ -241,7 +259,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "com_range": {"x": (-0.005, 0.005), "y": (-0.0001, 0.0001), "z": (-0.005, 0.005)},
+            "com_range": {"x": (-0.001, 0.001), "y": (-0.0001, 0.0001), "z": (-0.001, 0.001)},
         },
     )
 
@@ -279,7 +297,7 @@ class EventCfg:
             "friction_range": (0.010, 0.014),
             # each wheel x its own factor in [0.75, 1.25]: left/right motor mismatch like the real
             # robot, so the policy learns to hold yaw_rate = 0 against it instead of spinning
-            "asymmetry": 0.1,
+            "asymmetry": 0.25,
         },
     )
 
@@ -320,10 +338,10 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_external_force_local_x,
         mode="interval",
-        interval_range_s=(4.0, 6.0),
+        interval_range_s=(2.0, 4.0),
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["base_link"]),
-            "force_range": (-0.0, 0.0),
+            "force_range": PUSH_STAGES[0][1],  # set by the push_stages curriculum (0 at the start of training)
             "body_offset_z": 0.10,
         },
     )
@@ -416,7 +434,7 @@ class RewardsCfg:
     # 1 rad/s costs 0.1/step -- far below the yaw tracking terms, so it slows turns without stopping them.
     yaw_rate = RewTerm(
         func=mdp.ang_vel_z_l2,
-        weight=-0.5,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
@@ -441,7 +459,7 @@ class RewardsCfg:
     # complements velocity_tracking's unbounded penalty with a clear positive signal.
     velocity_tracking_bonus = RewTerm(
         func=mdp.velocity_command_tracking_bonus,
-        weight=7.5, #5
+        weight=2.5, #5
         params={
             "command_name": "target_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -578,16 +596,36 @@ class CurriculumsCfg:
     # target_yaw stays at 0 (= spawn heading, i.e. "don't turn") for the first YAW_CURRICULUM_ITERATIONS
     # PPO iterations, so the policy learns to balance + track velocity first, then switches to
     # YAW_RANGE_MAX (each new target within +-YAW_MAX_STEP of the previous one, see CommandsCfg).
-    yaw_range = CurrTerm(
+    # Disabled: no curriculum, like run 2026-10-08_15-17-25 (target_yaw uses YAW_RANGE_MAX from the start).
+    # yaw_range = CurrTerm(
+    #     func=mdp.modify_term_cfg,
+    #     params={
+    #         "address": "commands.target_yaw.ranges",
+    #         "modify_fn": mdp.step_value_curriculum,
+    #         "modify_params": {
+    #             "start_value": (0.0, 0.0),
+    #             "end_value": YAW_RANGE_MAX,
+    #             "num_steps": YAW_CURRICULUM_STEPS,
+    #         },
+    #     },
+    # )
+
+    # Staged turning + pushing (see YAW_STAGES / PUSH_STAGES): first learn to balance and track velocity
+    # without turning or being pushed, then widen the target heading range and push harder in steps.
+    yaw_stages = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
             "address": "commands.target_yaw.ranges",
-            "modify_fn": mdp.step_value_curriculum,
-            "modify_params": {
-                "start_value": (0.0, 0.0),
-                "end_value": YAW_RANGE_MAX,
-                "num_steps": YAW_CURRICULUM_STEPS,
-            },
+            "modify_fn": mdp.staged_value_curriculum,
+            "modify_params": {"stages": [(it * NUM_STEPS_PER_ENV, v) for it, v in YAW_STAGES]},
+        },
+    )
+    push_stages = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.push_robot.params.force_range",
+            "modify_fn": mdp.staged_value_curriculum,
+            "modify_params": {"stages": [(it * NUM_STEPS_PER_ENV, v) for it, v in PUSH_STAGES]},
         },
     )
 
@@ -645,7 +683,11 @@ class SelfBalancingEnvCfg_PLAY(SelfBalancingEnvCfg):
         self.commands.target_velocity.resampling_time_range = VELOCITY_RESAMPLING_TIME
         # self.commands.target_yaw_rate.ranges = YAW_RATE_RANGE_MAX
         # self.commands.target_yaw_rate.resampling_time_range = YAW_RATE_RESAMPLING_TIME
-        self.curriculum.yaw_range = None  # play evaluates the full yaw range right away
+        # self.curriculum.yaw_range = None  # yaw_range curriculum is disabled
+        # play evaluates the last curriculum stage right away
+        self.curriculum.yaw_stages = None
+        self.curriculum.push_stages = None
+        self.events.push_robot.params["force_range"] = PUSH_FORCE_MAX
         self.commands.target_yaw.ranges = YAW_RANGE_MAX
         self.commands.target_yaw.resampling_time_range = YAW_RESAMPLING_TIME
         # keep push_robot active during play to see how the policy handles disturbances

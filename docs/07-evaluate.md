@@ -40,7 +40,7 @@ Before taking a policy to the real robot, check:
       arrow without overshooting much.
 - [ ] **Smooth wheels**: no buzzing back and forth. Jittery torque that the simulator tolerates
       often heats or stalls a real motor.
-- [ ] **Recovery** from pushes, if `push_robot` is enabled.
+- [ ] **Recovery** from pushes (play uses the last curriculum stage, ±100 N every 2–4 s).
 
 Compare a few checkpoints of the same run (e.g. every 500 iterations): the latest is not always the
 best.

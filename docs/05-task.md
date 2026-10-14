@@ -92,7 +92,8 @@ This file defines two terms:
   target is exactly 0, so the policy also learns to stand still. Debug arrows: green = target,
   blue = actual velocity.
 - **`UniformYawCommand`** — a heading relative to the direction the robot faced at spawn (yaw 0).
-  Each new target is at most `max_step` away from the previous one. A robot told to stand still by
+  Every 5–7 s a new target is drawn in `ranges` (or, if `max_step` is set, at most `max_step` away
+  from the previous one). A robot told to stand still by
   the velocity command keeps the heading it has. Debug arrow: orange = target heading.
 
 !!! question "Why a heading and not a turning speed?"
@@ -144,9 +145,10 @@ pair of terms:
 
 ## 5.7 `mdp/curriculums.py` — new
 
-Learning to balance, drive and turn at once is hard at the start. This function lets a curriculum
-switch a config value after a number of steps; in 5.8 it keeps the target heading at 0 for the first
-2000 iterations.
+Learning to balance, drive, turn and resist pushes at once is hard at the start. This function lets a
+curriculum change a config value in stages: you give it a list of `(start step, value)` pairs, and it
+uses the value of the last stage that has started. In 5.8 it makes the heading targets and the pushes
+harder in three steps.
 
 ```python title="mdp/curriculums.py"
 --8<-- "docs/code/source/SelfBalancing/SelfBalancing/tasks/manager_based/selfbalancing/mdp/curriculums.py"
@@ -163,12 +165,21 @@ explained below; the complete file is at the end of this section.
 WHEEL_JOINT_NAMES = ["wheel1_motor1_joint", "wheel2_motor2_joint"]  # left (+Y), right (-Y)
 MOTOR_TORQUE_MAX = 0.49  # Nm, same as effort_limit in robot.py
 
-VELOCITY_RANGE = (-0.15, 0.15)  # m/s
-YAW_RANGE = (-math.pi, math.pi)  # rad, relative to the spawn heading
-YAW_MAX_STEP = math.radians(60.0)  # rad, max change of the target heading at each resample
+VELOCITY_RANGE = (-0.1, 0.1)  # m/s
 RESAMPLING_TIME = (5.0, 7.0)  # s
-YAW_CURRICULUM_ITERATIONS = 2000  # PPO iterations with the target heading held at 0
 STEPS_PER_ITERATION = 32  # = num_steps_per_env in agents/rsl_rl_ppo_cfg.py
+
+# Curriculum stages: (start iteration, value). Each stage holds until the next one starts.
+YAW_STAGES = [  # target heading range (rad), relative to the spawn heading
+    (0, (0.0, 0.0)),  # keep the spawn heading
+    (1500, (-math.radians(30.0), math.radians(30.0))),
+    (2000, (-math.radians(60.0), math.radians(60.0))),
+]
+PUSH_STAGES = [  # push force range (N)
+    (0, (0.0, 0.0)),  # no push
+    (1500, (-50.0, 50.0)),
+    (2000, (-100.0, 100.0)),
+]
 ```
 
 ### Scene
@@ -210,12 +221,12 @@ a contract with the firmware (chapter 8).
 | Event | When | What it does |
 |---|---|---|
 | `wheel_friction` | startup | Wheel–ground friction 1.5 / 1.2 |
-| `randomize_com` | startup | Chassis center of mass ±5 mm in X and Z |
+| `randomize_com` | startup | Chassis center of mass ±1 mm in X and Z |
 | `randomize_mass` | startup | Chassis mass ×0.8–1.2 (inertia recomputed) |
-| `randomize_motor_friction` | startup | Gearbox friction 0.010–0.014 Nm, left/right ±10 % |
+| `randomize_motor_friction` | startup | Gearbox friction 0.010–0.014 Nm, left/right ±25 % |
 | `reset_base` | reset | Initial tilt ±0.52 rad (±30°), tilt rate ±0.5 rad/s |
 | `reset_wheels` | reset | Wheels start at rest |
-| `push_robot` | every 4–6 s | Forward/backward kick; `force_range` is (0, 0) = off. Try (−200, 200) to train recovery from pushes |
+| `push_robot` | every 2–4 s | Forward/backward kick on the upper body; its strength (`force_range`) is set by the curriculum |
 
 If the policy works for a whole range of masses, frictions and delays, the real robot is likely to be
 one of them.
@@ -229,20 +240,30 @@ one of them.
 | `upright` / `upright_bonus` | −1000 / +0.5 | Stay vertical |
 | `pitch_rate` | −0.1 | No wobbling |
 | `wheel_speed` | −0.00005 | Don't spin the wheels needlessly |
-| `velocity_tracking` / `_bonus` | −5.0 / +7.5 | Follow the target velocity |
+| `velocity_tracking` / `_bonus` | −5.0 / +2.5 | Follow the target velocity |
 | `yaw_tracking` / `_bonus` | −0.5 / +2.0 | Turn to the target heading |
-| `yaw_rate` | −0.5 | Turn smoothly, don't spin |
+| `yaw_rate` | −0.1 | Turn smoothly, don't spin |
 | `action_rate` | −0.1 | Smooth motor commands, no jitter |
 
 ### Terminations, curriculum, environment
 
 - `time_out` ends an episode after 20 s (`time_out=True`: not a failure); `fell_over` ends it when
   the tilt exceeds 0.7 rad (~40°).
-- The curriculum sets `commands.target_yaw.ranges` to (0, 0) for the first 2000 iterations, then to
-  the full range.
+- The curriculum changes the target heading range (`commands.target_yaw.ranges`) and the push
+  strength (`events.push_robot.params.force_range`) in three stages (table below).
 - `sim.dt = 1/200` with `decimation = 2` → the policy acts at **100 Hz**, the same rate as the
   firmware. If the two rates differ, the policy's sense of time is wrong on the real robot.
-- `SelfbalancingEnvCfg_PLAY` is the evaluation version: 360 robots, no noise, full heading range.
+- `SelfbalancingEnvCfg_PLAY` is the evaluation version: 360 robots, no noise, and the last curriculum
+  stage (±60°, ±100 N) right away.
+
+| Iterations | Target heading | Push |
+|---|---|---|
+| 0 – 1499 | 0 (keep the spawn heading) | none |
+| 1500 – 1999 | ±30° | ±50 N |
+| 2000 – 2999 | ±60° | ±100 N |
+
+The robot first learns to balance and drive, then to turn and resist pushes. To change the schedule,
+edit `YAW_STAGES` and `PUSH_STAGES`.
 
 ### The complete file
 
@@ -283,7 +304,7 @@ Change three values and add one line in `PPORunnerCfg`:
 
 ```python
     num_steps_per_env = 32          # was 16
-    max_iterations = 5000           # was 150
+    max_iterations = 3000           # was 150 (1500 + 500 + 1000 curriculum iterations)
     save_interval = 50
     experiment_name = "selfbalancing"   # was "cartpole_direct"
     clip_actions = 1.0              # new: clip actions to [-1, 1] before they reach the env

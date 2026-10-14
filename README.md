@@ -66,10 +66,12 @@ without it.
   `DelayedPDActuatorCfg` in `robot.py`) to model the motor driver's reversal lag, so the torque
   applied now is a command from a few steps ago. Seeing its own last command lets the policy account
   for that. Actions are clipped to `[-1, 1]` (`clip_actions = 1.0`) before they reach the env.
-- **Target velocity (9):** sampled in ±0.15 m/s and changed every 5–7 s. About 15 % of the envs get
+- **Target velocity (9):** sampled in ±0.1 m/s and changed every 5–7 s. About 15 % of the envs get
   a zero command instead (and hold their heading), so the policy also learns to stand still.
-- **Target yaw (10):** held at 0 for the first 2000 iterations (curriculum), then every 5–7 s each new
-  target is within ±60° of the previous one, wrapped to [-π, π]. Play uses the full range directly.
+- **Target yaw (10):** changed every 5–7 s, drawn uniformly in a range set by a staged curriculum
+  that also sets the push strength: iterations 0–1499 target 0 and no push, 1500–1999 ±30° and
+  ±50 N pushes, 2000–2999 ±60° and ±100 N pushes (`YAW_STAGES` / `PUSH_STAGES` in the env config).
+  Play uses the last stage directly.
 - **Sign convention:** positive wheel velocity/torque drives the robot forward (+X); positive yaw
   (rate) = turning left, counter-clockwise seen from above. Tilting toward +X gives a *negative*
   pitch angle. The pitch rate is `root_ang_vel_b[:, 1]`, which is the **negative** of d(pitch

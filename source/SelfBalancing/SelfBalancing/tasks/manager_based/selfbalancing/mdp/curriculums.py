@@ -139,3 +139,26 @@ def step_value_curriculum(
 
     new_value = start_value if env.common_step_counter < num_steps else end_value
     return modify_term_cfg.NO_CHANGE if new_value == data else new_value
+
+
+def staged_value_curriculum(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    data,
+    stages: list,
+):
+    """Set a config value from a list of ``(start_step, value)`` stages (sorted by start_step): the
+    value of the last stage whose start_step <= ``env.common_step_counter`` is used. A step change,
+    not a ramp.
+
+    Meant for :class:`isaaclab.envs.mdp.curriculums.modify_term_cfg`, e.g.
+    ``"commands.target_yaw.ranges"`` or ``"events.push_robot.params.force_range"``. Like the other
+    curricula here, the counter restarts at 0 on every train.py launch, including ``--resume``.
+    """
+    from isaaclab.envs.mdp import modify_term_cfg
+
+    new_value = stages[0][1]
+    for start_step, value in stages:
+        if env.common_step_counter >= start_step:
+            new_value = value
+    return modify_term_cfg.NO_CHANGE if new_value == data else new_value
